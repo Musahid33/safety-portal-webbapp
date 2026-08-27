@@ -9,7 +9,7 @@
 
   var SP = window.SP, ICON = window.ICON, NAMES = window.ICON_NAMES;
   var T = { links: 'Links & Sections', brand: 'Header / Branding', support: 'Support', cloud: 'Cloud / Supabase', stats: 'Usage', sec: 'Security', bak: 'Backup' };
-  var D = null, dirty = false, tab = 'links', token = null, mustChange = false;
+  var D = null, dirty = false, tab = 'links', token = null, mustChange = false, saveErr = '';
   var OPEN = new Set(); // kaun-ka Options box khula tha (re-render me bana rahe)
   var esc, toast;
 
@@ -22,18 +22,38 @@
   function api(path, method, body) {
     if (!SP.server) return Promise.resolve({ ok: true, local: true });
     return SP.api(path, method, body).catch(function (e) {
-      if (e && e.code === 401 && path !== '/api/admin/login') {
-        token = null;
-        try { localStorage.removeItem(SP.LS.tok); } catch (e2) {}
-        throw new Error('Session khatam — dobara login kariye.');
+      /* 401 / needLogin = Supabase session nahi ya expire — RLS ka masla NAHIN.
+         Panel ko wahin login form par le jao, draft (D) zinda rahe. */
+      if (e && (e.code === 401 || e.needLogin) && path !== '/api/admin/login') {
+        saveErr = (e.needLogin && e.message) || 'Session khatam — dobara login kariye (aapka draft safe hai).';
+        needLogin(saveErr);
+        var x = new Error(saveErr); x.needLogin = true; throw x;
       }
       throw e;
     });
   }
 
+  /* login form dikhao, panel ka draft mat todo */
+  function needLogin(msg) {
+    token = null;
+    try { localStorage.removeItem(SP.LS.tok); } catch (e) {}
+    var v = document.getElementById('veil-admin'); if (!v) return;
+    v.dataset.locked = '1';
+    v.innerHTML = loginHTML();
+    if (msg) { var er = v.querySelector('#adm-err'); if (er) { er.textContent = msg; er.classList.add('show'); } }
+    var em = v.querySelector('#adm-email');
+    if (em && !em.value && SP.BE && SP.BE.email) em.value = SP.BE.email;
+  }
+
   /* ---------------------------------------------------------- open / close */
   function open() {
     init();
+    /* Supabase session hi asli credential hai — JWT zinda ho to dobara password mat maango
+       ( warna roz 2 login: ek Supabase ka, ek panel ka — aur beech me expire hone par 403 ) */
+    if (!token && SP.isSupa && SP.isSupa() && SP.session && SP.session().loggedIn) {
+      token = 'supabase';
+      try { localStorage.setItem(SP.LS.tok, token); } catch (e0) {}
+    }
     D = JSON.parse(JSON.stringify(SP.config || { sections: [] }));
     var v = document.getElementById('veil-admin');
     v.dataset.locked = '1';
@@ -136,6 +156,7 @@
 
   function renderSaveBar(pane) {
     var old = document.getElementById('savebar'); if (old) old.remove();
+    var pf = pane && pane.querySelector('.savefail'); if (pf) pf.remove();
     if (tab === 'stats') return;
     var bar = document.createElement('div');
     bar.className = 'bar-save' + (dirty ? ' dirty' : ''); bar.id = 'savebar';
@@ -143,23 +164,50 @@
       (mustChange ? ' &nbsp;·&nbsp; <b style="color:#b3222a">Default password abhi bhi chal raha hai!</b>' : '') + '</span>' +
       '<button class="btn gho sm" data-act="reload">' + ICON('refresh') + ' Discard</button>' +
       '<button class="btn grn sm" data-act="save">' + ICON('check') + ' Save &amp; Publish</button>';
+    if (saveErr) pane.insertBefore(failBox(), pane.firstChild);
     pane.appendChild(bar);
   }
-  function mark() { dirty = true; renderSaveBar(document.querySelector('[data-pane="' + tab + '"]')); }
+  /* save fail ka box: reason + turant karne layak kaam (re-login / session check / fix SQL) */
+  function failBox() {
+    var d = document.createElement('div');
+    d.className = 'savefail';
+    d.innerHTML = '<div class="t">' + ICON('alert') + ' Save nahi hua</div>' +
+      '<p>' + esc(saveErr) + '</p>' +
+      '<div class="acts">' +
+      '<button class="btn sm pri" data-act="save">' + ICON('refresh') + ' Dobara save kariye</button>' +
+      (SP.isSupa && SP.isSupa() ? '<button class="btn sm gho" data-act="relogin">' + ICON('lock') + ' Login kariye</button>' +
+        '<button class="btn sm gho" data-act="whoami">' + ICON('shield') + ' Session check</button>' +
+        '<button class="btn sm gho" data-act="copy-fix">' + ICON('download') + ' RLS fix SQL copy</button>' : '') +
+      '<button class="btn sm gho" data-act="fail-close">' + ICON('x') + ' Chhupao</button>' +
+      '</div>';
+    return d;
+  }
+  function mark() { dirty = true; saveErr = ''; renderSaveBar(document.querySelector('[data-pane="' + tab + '"]')); }
   function save() {
     // clean empty urls
     (D.sections || []).forEach(function (s) {
       (s.items || []).forEach(function (i) { if (!i.url) i.live = false; else if (i.live === undefined) i.live = true; });
     });
+    saveErr = '';
+    D.updatedAt = new Date().toISOString();
     if (!SP.server) {
       try { localStorage.setItem(SP.LS.cfg, JSON.stringify(D)); } catch (e) { return toast('Save fail: ' + e.message, 'alert'); }
       SP.config = JSON.parse(JSON.stringify(D)); SP.render(); dirty = false; renderTab();
       toast('Local mode me save ho gaya (sirf isi browser me).', 'check'); return;
     }
     api('/api/admin/config', 'PUT', { config: D }).then(function (r) {
+      saveErr = '';
       SP.config = r.config; D = JSON.parse(JSON.stringify(r.config)); SP.render(); dirty = false; renderTab();
-      toast('Publish ho gaya — portal live update ho gaya. (' + new Date().toLocaleTimeString() + ')', 'check');
-    }).catch(function (e) { toast('Save nahi hua: ' + e.message, 'alert'); });
+      toast('Publish ho gaya — portal live update ho gaya. (' + new Date().toLocaleTimeString() + (r.savedBy ? ' · ' + r.savedBy : '') + ')', 'check');
+    }).catch(function (e) {
+      if (e && e.needLogin) return;                       // login form already dikh gaya, draft safe
+      saveErr = e.message || String(e);
+      toast('Save nahi hua: ' + saveErr, 'alert');
+      if (tab === 'cloud') {                        // Cloud pane me save bar nahi hota -> box wahin dikhao
+        var b = document.getElementById('cloud-st');
+        if (b) { b.innerHTML = ''; b.appendChild(failBox()); }
+      } else renderSaveBar(document.querySelector('[data-pane="' + tab + '"]'));
+    });
   }
 
   /* ---------------------------------------------------------- LINKS pane */
@@ -374,14 +422,26 @@
       '<button class="btn gho" data-act="cloud-publish">' + ICON('upload') + ' Abhi ka config cloud par publish</button>' +
       '<button class="btn dan" data-act="cloud-clear">' + ICON('x') + ' Browser override hatao</button>' +
       '</div>' +
+      '<div class="acard" style="margin-top:16px"><div class="t" style="font-size:13.5px">' +
+      'Session &amp; RLS (save isiliye fail hota hai)' +
+      (SP.session && SP.session().loggedIn ? ' <span class="tag live">' + esc(SP.session().email || 'logged in') + '</span>' : ' <span class="tag off">NOT LOGGED IN</span>') +
+      '</div>' +
+      '<div class="acts" style="margin-top:10px">' +
+      '<button class="btn gho sm" data-act="whoami">' + ICON('shield') + ' Session check</button>' +
+      '<button class="btn gho sm" data-act="relogin">' + ICON('lock') + ' Login / re-login</button>' +
+      '<button class="btn gho sm" data-act="copy-fix">' + ICON('download') + ' supabase-rls-fix.sql copy</button>' +
+      '</div>' +
+      '<div id="sess-box" style="margin-top:10px"></div>' +
+      '<p class="tip" style="margin-top:8px">portal_config par write policy <span class="mono">to authenticated</span> hai — matlab <b>koi bhi logged-in Supabase user</b> likh sakta hai (koi extra “admin role” nahi chahiye). ' +
+      'Isliye “RLS ne roka” error ka matlab 99% baar <b>session nahi / expire ho gaya</b> hota hai: pehle <i>Session check</i>, phir login, tabhi Save kariye.</p></div>' +
       '<div class="acard" style="margin-top:16px"><div class="t" style="font-size:13.5px">Supabase setup — 4 step</div><ol class="tip" style="margin:8px 0 0 18px;line-height:1.9">' +
-      '<li><b>SQL:</b> Supabase Dashboard → SQL Editor → New query → <span class="mono">supabase-setup.sql</span> ka poora content paste karke RUN (table + RLS + click counter + 7-section seed).</li>' +
+      '<li><b>SQL:</b> Supabase Dashboard → SQL Editor → New query → <span class="mono">supabase-all.sql</span> ka poora content paste karke RUN (table + RLS + click counter + 7-section seed).</li>' +
       '<li><b>User:</b> Authentication → Users → <i>Add user</i> (email + password) — aur <i>Providers → Email</i> me <b>Confirm email OFF</b> rakhiye (warna login pehle verify maangega).</li>' +
       '<li><b>Key:</b> Project Settings → API → <span class="mono">Project URL</span> + <span class="mono">anon public</span> key upar daaliye → <i>Save &amp; test</i> → sab sahi to <i>config.js download</i>.</li>' +
       '<li><b>Host:</b> <span class="mono">index.html</span>, <span class="mono">config.js</span>, <span class="mono">css/</span>, <span class="mono">js/</span> ko Supabase Storage (public bucket <span class="mono">portal</span>) ya Netlify/Cloudflare Pages par daal dijiye — bas, global link ready.</li>' +
       '</ol><p class="tip" style="margin-top:8px">⚠ Anon key public hai isliye <b>RLS policy</b> hi security hai: sab padh sakte hain, likhna sirf logged-in admin. Seedha <span class="mono">curl</span> se bhi wahi policy lagegi.</p></div>' +
       '<div class="acard" style="margin-top:12px"><div class="t" style="font-size:13.5px">Ek aur option: single-file</div>' +
-      '<p class="tip" style="margin-top:6px">Agar pura folder host nahi karna, to <span class="mono">safety-portal-demo.html</span> (ek file) use kariye. Supabase values usme inline kar dunga — bata dijiye.</p></div>';
+      '<p class="tip" style="margin-top:6px">Agar pura folder host nahi karna, to <span class="mono">safety-portal-cloud.html</span> (ek file) use kariye — usme aapke Supabase values inline hain. Note: us file ka code <span class="mono">js/</span> se build hota hai (<span class="mono">node dev/build-single.js</span>).</p></div>';
   }
 
   /* ---------------------------------------------------------- stats pane */
@@ -584,12 +644,19 @@
         toast('config.js download ho gaya — index.html ke saath host kariye.', 'check');
         break;
       case 'cloud-publish':
-        SP.api('/api/admin/config', 'PUT', { config: D }).then(function (r) {
-          SP.config = r.config; D = JSON.parse(JSON.stringify(r.config)); SP.render(); dirty = false; renderTab();
-          toast(r.savedAt ? ('Cloud par publish ho gaya (' + new Date(r.savedAt).toLocaleTimeString() + ')') : 'Cloud par publish ho gaya.', 'check');
-        }).catch(function (e) { toast('Publish fail: ' + e.message, 'alert'); });
+        save();     // ek hi flow: session check + fail box + draft preserve (purana version error chhupa deta tha)
         break;
       case 'cloud-check': cloudCheck(); break;
+      case 'whoami': sessionCheck(); break;
+      case 'relogin': needLogin('Email + password daaliye (Supabase → Authentication → Users wala user).'); break;
+      case 'fail-close': saveErr = '';
+        if (tab === 'cloud') { var fb = document.querySelector('#cloud-st .savefail'); if (fb) fb.remove(); }
+        else renderSaveBar(document.querySelector('[data-pane="' + tab + '"]')); break;
+      case 'copy-fix':
+        if (navigator.clipboard) navigator.clipboard.writeText(RLS_FIX_SQL).then(function () { toast('Fix SQL copy ho gaya — Supabase → SQL Editor me paste karke RUN kariye.', 'check'); },
+          function () { toast('Copy fail — repo se supabase-rls-fix.sql kholiye.', 'alert'); });
+        else toast('Browser clipboard block kar raha hai — repo se supabase-rls-fix.sql kholiye.', 'alert');
+        break;
       case 'stats-reset':
         if (!confirm('Saare click counters 0 kar dein?')) return;
         api('/api/admin/stats', 'POST').then(function () { toast('Counters reset.', 'check'); loadStats(); }); break;
@@ -743,6 +810,70 @@
     }
   });
 
+  var RLS_FIX_SQL = [
+    '-- Supabase → SQL Editor me paste karke RUN kariye (poora safe hai, dobara chalane se kuch bigadta nahi)',
+    'grant usage on schema public to anon, authenticated;',
+    'grant select on table public.portal_config to anon;',
+    'grant select, insert, update on table public.portal_config to authenticated;',
+    'alter table public.portal_config add column if not exists updated_by text;',
+    'alter table public.portal_config enable row level security;',
+    'drop policy if exists "portal_config_read_all"   on public.portal_config;',
+    'drop policy if exists "portal_config_write_admin" on public.portal_config;',
+    'drop policy if exists "portal_config_insert_admin" on public.portal_config;',
+    'drop policy if exists "portal_config_write_one"   on public.portal_config;',
+    'create policy "portal_config_read_all" on public.portal_config for select to anon, authenticated using (true);',
+    'create policy "portal_config_write_admin" on public.portal_config',
+    "  for update to authenticated using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');",
+    'create policy "portal_config_insert_admin" on public.portal_config',
+    "  for insert to authenticated with check (auth.role() = 'authenticated');",
+  ].join('\n');
+
+  async function sessionCheck() {
+    var box = document.getElementById('sess-box'); if (!box) return;
+    box.innerHTML = '<div class="sup-note">Session dekh raha hoon…</div>';
+    var st = (SP.session && SP.session()) || {};
+    var out = [], okAll = true;
+    function row(k, v, d, bad) { out.push([k, v, d]); if (bad) okAll = false; }
+    if (!st.hasUrl) row('Supabase config', 'off', 'config.js me supabaseUrl / anon key nahi hai', true);
+    row('Mode', st.mode === 'supabase' ? 'ok' : 'note', st.mode === 'supabase' ? 'supabase (global)' : 'abhi ' + st.mode + ' mode — cloud par likhne ke liye config.js chahiye', st.mode !== 'supabase');
+    row('Login (JWT)', st.loggedIn ? 'ok' : 'off', st.email ? (st.email + (st.tokenFresh ? '' : ' — token expire')) : 'is browser me session nahi — neeche Login kariye', !st.loggedIn);
+    row('Token bache', st.expiresIn != null ? (st.expiresIn > 300 ? 'ok' : 'note') : 'note',
+      st.expiresIn != null ? (Math.round(st.expiresIn / 60) + ' minute (khud refresh ho jayega)') : 'expiry JWT se pata nahi chala', false);
+    row('Refresh token', st.hasRefresh ? 'ok' : 'off', st.hasRefresh ? 'session apne aap taaza hota rahega' : '1 ghante baad dobara login karna padega', !st.hasRefresh);
+    var who = null;
+    try {
+      var w = await SP.api('/api/admin/whoami');
+      if (w && w.missing) row('sp_whoami()', 'note', 'SQL me ye function abhi nahi hai — supabase-all.sql ya supabase-rls-fix.sql RUN kariye (2 line ka kaam)', false);
+      else who = w && w.who;
+    } catch (e) { row('sp_whoami()', 'fail', e.message, false); }
+    if (who) {
+      var isAuth = String(who.jwt_role) === 'authenticated';
+      row('DB role', isAuth ? 'ok' : 'off', 'PostgREST is request ko "' + esc(String(who.jwt_role)) + '" role de raha hai' +
+        (isAuth ? (who.uid ? ' · uid ' + esc(String(who.uid)) : '') : ' — authenticated chahiye (login kariye)'), !isAuth);
+      if (who.email) row('Supabase user', who.email_confirmed === false ? 'off' : 'ok', esc(String(who.email)) +
+        (who.email_confirmed === false ? ' — email confirm nahi (Providers → Email → Confirm email OFF kariye)' : ''), who.email_confirmed === false);
+      var pols = who.policies || [];
+      var upd = pols.filter(function (p) { return p.cmd === 'update' || p.cmd === 'all'; });
+      var okPol = upd.some(function (p) { var rl = p.roles || []; return !rl.length || rl.indexOf('authenticated') >= 0; });
+      row('Update policy', okPol ? 'ok' : 'off', okPol ? ('authenticated ke liye: ' + upd.map(function (p) { return p.name; }).join(', '))
+        : (upd.length ? 'policy hai par authenticated role me nahi: ' + upd.map(function (p) { return p.name + ' [' + (p.roles || []).join(',') + ']'; }).join(' · ')
+          : 'koi update policy nahi mili — supabase-rls-fix.sql RUN kariye'), !okPol);
+      var ins = pols.filter(function (p) { return p.cmd === 'insert' || p.cmd === 'all'; });
+      if (!ins.length) row('Insert policy', 'off', 'upsert ko insert policy bhi chahiye — supabase-rls-fix.sql RUN kariye', true);
+      var g = who.grants || {};
+      var okG = g.auth_insert !== false && g.auth_update !== false;
+      row('GRANT (authenticated)', okG ? 'ok' : (who.grants_missing ? 'note' : 'off'),
+        'insert: ' + (g.insert === undefined ? '?' : (g.insert ? 'yes' : 'NO')) + ' · update: ' + (g.update === undefined ? '?' : (g.update ? 'yes' : 'NO')) +
+        (okG ? '' : ' — table par grant nahi (RLS se pehle ye aata hai)'), !okG);
+    }
+    box.innerHTML = '<table class="tbl"><tr><th>Check</th><th></th><th>Detail</th></tr>' +
+      out.map(function (r) {
+        return '<tr><td>' + r[0] + '</td><td><span class="tag ' + (r[1] === 'ok' ? 'live' : r[1] === 'note' ? 'how' : 'off') + '">' + esc(r[1]) + '</span></td><td class="tip">' + r[2] + '</td></tr>';
+      }).join('') + '</table>' +
+      '<p class="tip" style="margin-top:8px;color:' + (okAll ? '#1f7a3d' : '#b3222a') + '">' +
+      (okAll ? '✓ Session aur policy dono theek hain — ab Save & Publish chalega.' : '✗ Upar wali red line(s) thik kariye. Sabse pehle: Login / re-login → Save. Uske baad bhi atke to fix SQL (neeche button) RUN kariye.') + '</p>';
+  }
+
   async function cloudCheck() {
     var box = document.getElementById('cloud-st'); if (!box) return;
     box.innerHTML = '<div class="sup-note">Test chal raha hai…</div>';
@@ -757,12 +888,13 @@
       else { okAll = false; out.push(['portal_config row', 'fail', 'kuch nahi mila']); }
     } catch (e) { okAll = false; out.push(['portal_config read', 'fail', e.message]); }
     try {
-      var m = await SP.api('/api/admin/me'); out.push(['Login/token', 'ok', m.email || 'valid']);
-    } catch (e) { out.push(['Login/token', 'note', e.message + ' (admin panel kholne ke liye login kariye)']); }
+      var m = await SP.api('/api/admin/me'); out.push(['Login/token', 'ok', (m.email || 'valid') + ' — RLS ke liye bas yahi chahiye']);
+      okAll = okAll && true;
+    } catch (e) { okAll = false; out.push(['Login/token', 'fail', e.message + ' → “Login / re-login” dabaiye']); }
     box.innerHTML = '<div class="acard"><table class="tbl"><tr><th>Check</th><th>Status</th><th>Detail</th></tr>' +
       out.map(function (r) { return '<tr><td>' + esc(r[0]) + '</td><td><span class="tag ' + (r[1] === 'ok' ? 'live' : r[1] === 'note' ? 'how' : 'off') + '">' + esc(r[1]) + '</span></td><td class="tip">' + esc(String(r[2] || '')) + '</td></tr>'; }).join('') +
       '</table></div>' + (okAll ? '<p class="tip" style="margin-top:8px;color:#1f7a3d">✓ Sab theek — ab config.js download karke host kariye.</p>' : '<p class="tip" style="margin-top:8px;color:#b3222a">✗ Upar wali line(s) thik kariye — RLS/SQL script ya key check kariye.</p>');
   }
 
-  window.SPAdmin = { open: open, save: save, cloudCheck: cloudCheck, gotoCloud: function () { var v = document.getElementById('veil-admin'); if (!v.classList.contains('show')) open(); tab = 'cloud'; if (v.querySelector('.adm-tabs')) renderTab(); } };
+  window.SPAdmin = { open: open, save: save, cloudCheck: cloudCheck, sessionCheck: sessionCheck, gotoCloud: function () { var v = document.getElementById('veil-admin'); if (!v.classList.contains('show')) open(); tab = 'cloud'; if (v.querySelector('.adm-tabs')) renderTab(); } };
 })();

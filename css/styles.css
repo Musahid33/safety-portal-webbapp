@@ -266,6 +266,12 @@ svg { width: 100%; height: 100%; display: block; }
 .adm-body section.on { display: block; animation: rise .26s both; }
 .hint { font-size: 12.5px; color: var(--ink-2); background: #f3f7fd; border: 1px solid #dce8f7; border-radius: 12px; padding: 11px 13px; margin-bottom: 16px; line-height: 1.55; }
 .hint b { color: var(--navy-1); }
+/* Admin panel: save fail hone par reason + turant karne layak kaam (session/RLS) */
+.savefail { border: 1px solid #f0c9cd; background: #fdf3f3; border-radius: 12px; padding: 12px 13px; margin-bottom: 14px; }
+.savefail .t { font-weight: 800; font-size: 13.5px; color: #b3222a; display: flex; align-items: center; gap: 7px; }
+.savefail .t svg { width: 16px; height: 16px; }
+.savefail p { margin: 7px 0 0; font-size: 12.5px; color: #7c2b30; line-height: 1.6; }
+.savefail .acts { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
 .sec-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .sec-tools h4 { margin: 0; font-size: 15px; letter-spacing: .3px; }
 .acard { border: 1px solid var(--line); border-radius: 14px; padding: 13px; margin-bottom: 12px; background: #fff; transition: .16s; }
