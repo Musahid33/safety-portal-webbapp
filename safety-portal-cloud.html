@@ -657,6 +657,7 @@ window.SP_SEED = {"version":1,"updatedAt":"2026-08-27T05:11:23.192Z","brand":{"t
     }
     if (status === 401) return 'Session khatam ya login nahi — Admin → Cloud → Login kariye (Supabase user se). Anon key se likha nahi ja sakta (RLS).';
     if (status === 403) return 'Supabase ne likhne se roka (RLS policy) — login authenticated role se hona chahiye; supabase-setup.sql me "portal_config_write_admin" policy hai.';
+    if (status === 409) return 'Supabase ne conflict bataya (' + ((j && j.code) || 'PGRST409') + ') — upsert ke liye id primary key chahiye. SQL Editor me supabase-all.sql ek baar RUN karke dobara save kariye.';
     return (j && (j.msg || j.error_description || j.error || j.message)) || ('Supabase error ' + status);
   }
 
@@ -706,27 +707,30 @@ window.SP_SEED = {"version":1,"updatedAt":"2026-08-27T05:11:23.192Z","brand":{"t
 
     if (path === '/api/admin/config' && method === 'PUT') {
       var data = body && body.config ? body.config : body;
-      var prefer = H({ 'Prefer': 'return=representation' });
-      if (!BE.hasRow) {
-        r = await fetch(BE.url + '/rest/v1/portal_config', { method: 'POST', headers: prefer, body: JSON.stringify({ id: 1, data: data }) });
-      } else {
-        r = await fetch(BE.url + '/rest/v1/portal_config?id=eq.1', { method: 'PATCH', headers: prefer, body: JSON.stringify({ data: data }) });
-        if (r.ok) {
-          j = await jread(r);
-          if (!Array.isArray(j) || j.length === 0) {   // row abhi nahi bani -> insert
-            r = await fetch(BE.url + '/rest/v1/portal_config', { method: 'POST', headers: prefer, body: JSON.stringify({ id: 1, data: data }) });
-            j = await jread(r);
-          }
-        }
-        if (r.ok) {
-          var row = Array.isArray(j) ? j[0] : j;
-          if (row) { BE.updatedAt = row.updated_at; BE.hasRow = true; return { ok: true, config: row.data, savedAt: row.updated_at }; }
-        }
+      /* Ek hi UPSERT — POST ...?on_conflict=id + Prefer: resolution=merge-duplicates.
+         Purana "PATCH, warna POST" 409 (duplicate key) deta tha jab BE.hasRow stale ho:
+         row cloud par pehle se thi par local state kehti thi nahi (ya ulta). Ab PostgREST
+         khud conflict dekh kar update/insert chunta hai, isliye race hi nahi. */
+      await suRefresh();                              // write se pehle fresh JWT (expired token = 401/403)
+      var up = function () {
+        return fetch(BE.url + '/rest/v1/portal_config?on_conflict=id', {
+          method: 'POST',
+          headers: H({ 'Prefer': 'resolution=merge-duplicates,return=representation' }),
+          body: JSON.stringify({ id: 1, data: data })
+        });
+      };
+      r = await up();
+      if (r.status === 408 || r.status === 429 || r.status >= 500) {   // timeout / rate-limit / server blip -> ek retry
+        await new Promise(function (z) { setTimeout(z, 700); });
+        await suRefresh();
+        r = await up();
       }
-      if (!r.ok) { var ej = await jread(r); throw err(pubErr(r.status, ej), r.status); }
-      var aj = await jread(r); var arow = Array.isArray(aj) ? aj[0] : aj;
-      if (arow) { BE.updatedAt = arow.updated_at; BE.hasRow = true; return { ok: true, config: arow.data, savedAt: arow.updated_at }; }
-      return { ok: true, config: data };
+      j = await jread(r);
+      if (!r.ok) throw err(pubErr(r.status, j), r.status);
+      var row = Array.isArray(j) ? j[0] : j;
+      if (!row) throw err('Supabase ne saved row wapas nahi bheji — dobara Save & Publish kariye.', 502);
+      BE.updatedAt = row.updated_at; BE.hasRow = true;
+      return { ok: true, config: row.data, savedAt: row.updated_at };
     }
 
     if (path === '/api/admin/stats' && (method === undefined || method === 'GET')) {
