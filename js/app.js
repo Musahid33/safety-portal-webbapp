@@ -339,7 +339,7 @@
   SP.showVeil = showVeil; SP.hideVeil = hideVeil;
 
   /* ---------------------------------------------------------- support modal */
-  function renderSupport() {
+  function renderSupport(whatsappOnly) {
     var s = (SP.config && SP.config.support) || {};
     var mob = String(s.mobile || '').replace(/[^\d+]/g, '');
     var alt = String(s.altMobile || '').replace(/[^\d+]/g, '');
@@ -347,24 +347,29 @@
     rows += '<div class="sup-who"><div class="av">' + esc((s.name || 'S').slice(0, 2).toUpperCase()) + '</div><div>' +
       '<div class="nm">' + esc(s.name || 'Support Team') + '</div>' +
       '<div class="rl">Portal support &amp; link management' + (s.developer ? ' · developed by ' + esc(s.developer) : '') + '</div></div>';
-    if (s.mobile) rows += '<a class="contact" href="tel:+' + esc(mob.replace(/^\+/, '')) + '"><span class="ci">' + ICON('phone') + '</span>' +
-      '<span><span class="cl">Mobile / Call</span><span class="cv">' + esc(s.mobile) + '</span></span></a>';
-    if (s.altMobile) rows += '<a class="contact" href="tel:+' + esc(alt.replace(/^\+/, '')) + '"><span class="ci">' + ICON('phone') + '</span>' +
-      '<span><span class="cl">Alternate number</span><span class="cv">' + esc(s.altMobile) + '</span></span></a>';
-    if (s.mobile) rows += '<a class="contact wa" target="_blank" rel="noopener" href="https://wa.me/' + esc(mob.replace(/[^0-9]/g, '')) + '?text=' + encodeURIComponent('Hi ' + (s.name || 'Musahid') + ', mujhe Safety Portal me help chahiye.') + '">' +
-      '<span class="ci">' + ICON('chat') + '</span><span><span class="cl">WhatsApp</span><span class="cv">Chat on WhatsApp</span></span></a>';
-    if (s.email) rows += '<a class="contact em" href="mailto:' + esc(s.email) + '"><span class="ci">' + ICON('mail') + '</span>' +
-      '<span><span class="cl">Email</span><span class="cv">' + esc(s.email) + '</span></span></a>';
-    rows += '<div class="acts">' +
-      (s.mobile ? '<a class="btn grn" href="tel:+' + esc(mob.replace(/^\+/, '')) + '">' + ICON('phone') + ' Call now</a>' : '') +
-      '<button class="btn gho" data-copy="' + esc(s.mobile || '') + '">' + ICON('clipboard') + ' Copy number</button>' +
-      '</div>';
+    if (whatsappOnly) {
+      if (s.mobile) rows += '<a class="contact wa" target="_blank" rel="noopener" href="https://wa.me/' + esc(mob.replace(/[^0-9]/g, '')) + '?text=' + encodeURIComponent('Hi ' + (s.name || 'Musahid') + ', mujhe Safety Portal me help chahiye.') + '">' +
+        '<span class="ci">' + ICON('chat') + '</span><span><span class="cl">WhatsApp</span><span class="cv">Chat on WhatsApp</span></span></a>';
+    } else {
+      if (s.mobile) rows += '<a class="contact" href="tel:+' + esc(mob.replace(/^\+/, '')) + '"><span class="ci">' + ICON('phone') + '</span>' +
+        '<span><span class="cl">Mobile / Call</span><span class="cv">' + esc(s.mobile) + '</span></span></a>';
+      if (s.altMobile) rows += '<a class="contact" href="tel:+' + esc(alt.replace(/^\+/, '')) + '"><span class="ci">' + ICON('phone') + '</span>' +
+        '<span><span class="cl">Alternate number</span><span class="cv">' + esc(s.altMobile) + '</span></span></a>';
+      if (s.mobile) rows += '<a class="contact wa" target="_blank" rel="noopener" href="https://wa.me/' + esc(mob.replace(/[^0-9]/g, '')) + '?text=' + encodeURIComponent('Hi ' + (s.name || 'Musahid') + ', mujhe Safety Portal me help chahiye.') + '">' +
+        '<span class="ci">' + ICON('chat') + '</span><span><span class="cl">WhatsApp</span><span class="cv">Chat on WhatsApp</span></span></a>';
+      if (s.email) rows += '<a class="contact em" href="mailto:' + esc(s.email) + '"><span class="ci">' + ICON('mail') + '</span>' +
+        '<span><span class="cl">Email</span><span class="cv">' + esc(s.email) + '</span></span></a>';
+      rows += '<div class="acts">' +
+        (s.mobile ? '<a class="btn grn" href="tel:+' + esc(mob.replace(/^\+/, '')) + '">' + ICON('phone') + ' Call now</a>' : '') +
+        '<button class="btn gho" data-copy="' + esc(s.mobile || '') + '">' + ICON('clipboard') + ' Copy number</button>' +
+        '</div>';
+    }
     if (s.note) rows += '<div class="sup-note">' + ICON('alert') + ' ' + esc(s.note) + '</div>';
     document.getElementById('sup-body').innerHTML = rows;
     document.getElementById('sup-title').textContent = (s.heading || 'SUPPORT') + ' — ' + (s.name || '');
   }
   function wireSupport() {
-    var open = function () { renderSupport(); showVeil(document.getElementById('veil-support')); };
+    var open = function (e) { renderSupport(e.currentTarget.id === 'btn-support-top'); showVeil(document.getElementById('veil-support')); };
     ['btn-support', 'btn-support-top'].forEach(function (i) {
       var b = document.getElementById(i); if (b) b.addEventListener('click', open);
     });
