@@ -1,8 +1,3 @@
-/* =============================================================
-   SAFETY PORTAL - portal side logic (config -> render)
-   Config server ke data/config.json se aata hai. Agar sirf static
-   hosting par rakha ho to browser localStorage me chala jata hai.
-   ============================================================= */
 (function () {
   'use strict';
 
@@ -476,7 +471,9 @@
     document.getElementById('dev-name').textContent = s.developer || s.name || 'Musahid';
     document.getElementById('sup-heading').textContent = s.heading || 'SUPPORT';
     document.getElementById('sup-line1').textContent = s.line1 || 'Contact for any technical issue';
-    document.getElementById('sup-line2').innerHTML = 'Contact person : <b class="hl">' + esc(s.name || '—') + '</b> &nbsp;|&nbsp; Mob : <b>' + esc(s.mobile || '—') + '</b>';
+    var mobLink = s.mobile ? '<a href="tel:+' + esc(String(s.mobile).replace(/^\+/, '')) + '"><b>' + esc(s.mobile) + '</b></a>' : '<b>—</b>';
+    var waLink = s.mobile ? '<a class="wa-tiny" href="https://wa.me/' + esc(String(s.mobile).replace(/[^0-9]/g, '')) + '?text=' + encodeURIComponent('Hi, mujhe Safety Portal me help chahiye.') + '" target="_blank" rel="noopener">WhatsApp</a>' : '';
+    document.getElementById('sup-line2').innerHTML = 'Contact person : <b class="hl">' + esc(s.name || '—') + '</b> &nbsp;|&nbsp; Mob : ' + mobLink + (waLink ? ' &nbsp;·&nbsp; ' + waLink : '');
     document.getElementById('btn-support').style.display = s.enabled === false ? 'none' : '';
     var badge = '';
     if (!SP.server) {

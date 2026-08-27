@@ -1,9 +1,3 @@
-/* =============================================================
-   ADMIN PANEL — section / button / URL manager
-   Yahi panel wo "login + section banana" wala hissa hai:
-   login karke naya section ya button add kariye, URL daliye, Save dabaiye
-   -> portal par button turant LIVE ho jayega. Code chhedne ki zarurat nahi.
-   ============================================================= */
 (function () {
   'use strict';
 
