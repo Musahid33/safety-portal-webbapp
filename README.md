@@ -20,9 +20,10 @@ dev/deploy-to-supabase.js← (optional) site files ko Supabase Storage 'portal' 
 ## 1. Pehla din (5 minute)
 1. **Supabase** → SQL Editor → New query → `supabase-all.sql` ka pura content → **RUN**
    (ban jayega: `portal_config` 1-row table + RLS + `portal_hits`/`record_hit()` + public `portal` bucket + aapka 7-section seed)
-2. **Supabase** → Authentication → Users → **Add user** (email + password) → **yahi aapka admin login hai**
-   Providers → Email → **Confirm email OFF** (warna pehla login atak jayega)
-3. `config.js` me apni values (repo me aapke project ki values daal di gayi hain):
+2. **Supabase** → Authentication → Users → **Add user** (email + password). User ko select karke **App Metadata** me ye set kariye: `{"role":"admin"}`. Isi role wale authenticated users config likh sakte hain.
+   Providers → Email → **Confirm email OFF** (warna pehla login atak jayega). Role badalne ke baad sign out karke dobara login kariye, taaki naya JWT mile.
+3. Agar pehle SQL chala chuke hain, `supabase-rls-fix.sql` SQL Editor me run kariye. Ye `portal_config_write_admin` ko sahi `USING` + `WITH CHECK` clauses ke saath INSERT/UPDATE ke liye repair karta hai.
+4. `config.js` me apni values (repo me aapke project ki values daal di gayi hain):
    ```js
    window.SP_BACKEND = {
      mode: 'auto',                                   // cloud mile to Supabase, na mile to local dev server
@@ -31,7 +32,7 @@ dev/deploy-to-supabase.js← (optional) site files ko Supabase Storage 'portal' 
      pollSeconds: 20
    };
    ```
-4. **GitHub Pages chalu**: is repo me ye files commit kariye → Settings → Pages → Source: **Deploy from a branch** → `main` / **`/(root)`** → Save.
+5. **GitHub Pages chalu**: is repo me ye files commit kariye → Settings → Pages → Source: **Deploy from a branch** → `main` / **`/(root)`** → Save.
    Site 1-2 minute me: `https://musahid33.github.io/safety-portal-webbapp/`
 
 ## 2. Roz ka kaam (admin)
