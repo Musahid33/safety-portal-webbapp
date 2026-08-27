@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Safety Portal</title>
+<meta name="description" content="Safety Portal - all safety systems, dashboards, SOP and incident reporting links at one place." />
+<meta name="theme-color" content="#0a2b56" />
+<meta name="repo" content="https://github.com/Musahid33/safety-portal-webbapp" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5a623' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M12 21s7.5-3.6 7.5-9.2V4.8L12 2.6 4.5 4.8v7C4.5 17.4 12 21 12 21z'/%3E%3Cpath d='M8.6 11.9l2.4 2.4 4.6-4.8'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand left">
+      <span class="logo" id="brand-logo"></span>
+      <span class="nm" id="brand-left">Loading…</span>
+    </div>
+    <div class="portal-title">
+      <span class="shield" id="brand-shield"></span>
+      <div>
+        <h1 id="brand-title">SAFETY PORTAL</h1>
+        <span class="tg" id="brand-tagline" hidden></span>
+      </div>
+    </div>
+    <div class="brand right">
+      <span class="nm" id="brand-right"></span>
+      <span class="logo" id="brand-tata"></span>
+    </div>
+
+    <div class="top-actions">
+      <label class="field-search">
+        <span id="ic-search"></span>
+        <input id="q" type="search" placeholder="Search links…  (e.g. VSPI, weigh bridge)" autocomplete="off" aria-label="Search links" />
+      </label>
+      <span class="livecount"><i class="dot"></i><span id="livecount">—</span></span>
+      <span class="spacer"></span>
+      <button class="btn-top" id="btn-support-top"><span id="ic-headset"></span> Support</button>
+      <button class="btn-top" id="btn-admin"><span id="ic-lock"></span> Admin</button>
+    </div>
+  </div>
+</header>
+
+<div class="cloud-banner" id="cloud-banner"></div>
+
+<nav class="jumpnav" id="jumpnav" aria-label="Sections"></nav>
+
+<main class="wrap">
+  <div class="grid" id="grid"></div>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="dev">Design and development by <span class="hl" id="dev-name">Musahid</span></div>
+    <div class="vline"></div>
+    <div class="sup">
+      <button class="support-btn" id="btn-support" aria-haspopup="dialog">
+        <span class="sh" id="ic-support"></span>
+        <span>
+          <span class="hd" id="sup-heading">SUPPORT</span>
+          <p id="sup-line1">Contact for any technical issue</p>
+          <p id="sup-line2">Contact person : <b class="hl">—</b> &nbsp;|&nbsp; Mob : <b>—</b></p>
+        </span>
+      </button>
+    </div>
+  </div>
+  <p class="footer-note" id="foot-note"></p>
+</footer>
+
+<!-- support modal -->
+<div class="veil" id="veil-support" role="dialog" aria-modal="true" aria-label="Support">
+  <div class="sheet">
+    <div class="sheet-hd">
+      <span class="ic" id="ic-sup-hd"></span>
+      <h3 id="sup-title">Support</h3>
+      <button class="x" data-close aria-label="Close"><span id="ic-x1"></span></button>
+    </div>
+    <div class="sheet-bd"><div class="supcard" id="sup-body"></div></div>
+  </div>
+</div>
+
+<!-- embed viewer (internal tools kholne ke liye, bina portal chhode) -->
+<div class="veil embed" id="veil-embed" role="dialog" aria-modal="true" aria-label="Link viewer">
+  <div class="sheet embedsheet">
+    <div class="sheet-hd">
+      <span class="ic" id="ic-emb"></span>
+      <h3 id="emb-title">Link</h3>
+      <span class="embed-hint" id="emb-hint"></span>
+      <button class="x" data-close aria-label="Close"><span id="ic-x2"></span></button>
+    </div>
+    <iframe id="emb-frame" title="Embedded link" referrerpolicy="no-referrer-when-downgrade"></iframe>
+  </div>
+</div>
+
+<!-- admin (login + panel) -->
+<div class="veil admin" id="veil-admin" role="dialog" aria-modal="true" aria-label="Admin"></div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="config.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/app.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>
