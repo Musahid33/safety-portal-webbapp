@@ -63,20 +63,15 @@
   /* ---------------------------------------------------------- login view */
   function loginHTML() {
     var local = !SP.server, su = SP.isSupa && SP.isSupa();
-    var extra = '';
-    if (local) extra = '<div class="sup-note" style="margin-top:12px">Koi backend nahi mila — <b>LOCAL MODE</b> chal raha hai. Yahan ka data sirf isi browser me rahega. Poore network ke liye Supabase (Cloud tab) ya <span class="mono">node server.js</span> chahiye.</div>';
-    else if (su) extra = '<div class="sup-note" style="margin-top:12px">Login aapke <b>Supabase</b> project se hota hai (Authentication → Users). Email + password wahi daaliye.</div>';
+    // Sirf username + password — baaki koi note/link/hint nahi
     return '<div class="sheet" style="width:min(430px,100%)"><div class="sheet-hd">' +
-      '<span class="ic">' + ICON('lock') + '</span><h3>Admin login' + (su ? ' <span class="badge-new">SUPABASE</span>' : local ? ' <span class="badge-new">LOCAL</span>' : '') + '</h3>' +
+      '<span class="ic">' + ICON('lock') + '</span><h3>Admin login</h3>' +
       '<button class="x" data-act="close">' + ICON('x') + '</button></div>' +
       '<div class="sheet-bd login">' +
-      '<p style="margin:0;font-size:13.5px;color:var(--ink-2)">Is panel se aap naye section / button bana sakte hain aur URL set karke unhe LIVE kar sakte hain.</p>' + extra +
-      (su ? '<div class="fld"><label>Email</label><input type="email" id="adm-email" autocomplete="username" placeholder="you@company.com" value="' + esc((SP.BE && SP.BE.email) || '') + '" /></div>' : '') +
-      '<div class="fld"><label>' + (local ? (localStorage.getItem('sp_pw_local') ? 'Password' : 'Naya password banaiye (6+)') : 'Password') + '</label><input type="password" id="adm-pw" autocomplete="current-password" placeholder="••••••••" /></div>' +
+      '<div class="fld"><label>' + (su ? 'Username / Email' : 'Username') + '</label><input type="' + (su ? 'email' : 'text') + '" id="' + (su ? 'adm-email' : 'adm-user') + '" autocomplete="username" placeholder="Username" value="' + (su ? esc((SP.BE && SP.BE.email) || '') : '') + '" /></div>' +
+      '<div class="fld"><label>' + (local && !localStorage.getItem('sp_pw_local') ? 'Naya password banaiye (6+)' : 'Password') + '</label><input type="password" id="adm-pw" autocomplete="current-password" placeholder="••••••••" /></div>' +
       '<p class="err" id="adm-err"></p>' +
       '<div class="acts" style="margin-top:16px"><button class="btn pri blk" data-act="login">' + ICON('lock') + ' Login</button></div>' +
-      (local || su ? '' : '<p style="font-size:11.5px;color:var(--ink-2);margin:14px 0 0">Default password: <span class="mono">admin@123</span> — Security tab se turant badal dijiye.</p>') +
-      (su ? '<p style="font-size:11.5px;color:var(--ink-2);margin:12px 0 0"><a href="#cloud" data-act="tab-cloud" style="color:var(--cyan)">Cloud settings badalni hain? (Supabase URL / key)</a></p>' : '') +
       '</div></div>';
   }
 

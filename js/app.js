@@ -474,10 +474,6 @@
     tg.textContent = b.tagline || ''; tg.hidden = !b.tagline;
 
     document.getElementById('dev-name').textContent = s.developer || s.name || 'Musahid';
-    document.getElementById('sup-heading').textContent = s.heading || 'SUPPORT';
-    document.getElementById('sup-line1').textContent = s.line1 || 'Contact for any technical issue';
-    document.getElementById('sup-line2').innerHTML = 'Contact person : <b class="hl">' + esc(s.name || '—') + '</b> &nbsp;|&nbsp; Mob : <b>' + esc(s.mobile || '—') + '</b>';
-    document.getElementById('btn-support').style.display = s.enabled === false ? 'none' : '';
     var badge = '';
     if (!SP.server) {
       badge = ' &nbsp;·&nbsp; <span class="badge-new">LOCAL MODE</span> changes sirf isi browser me save honge' + (SP.backendNote ? ' <span class="tip">(' + esc(SP.backendNote) + ')</span>' : '');
@@ -487,9 +483,7 @@
         (SP.needsPublish ? ' <span class="tip">table ready nahi — niche dekhiye</span>' : (t ? ' <span class="tip">last publish: ' + esc(t) + '</span>' : ''));
     }
     document.getElementById('foot-note').innerHTML =
-      '© ' + new Date().getFullYear() + ' ' + esc(b.leftName || '') + (b.rightName ? ' · ' + esc(b.rightName) : '') +
-      ' &nbsp;·&nbsp; <button id="foot-admin">Admin login</button>' + badge;
-    document.getElementById('foot-admin').addEventListener('click', openAdmin);
+      '© ' + new Date().getFullYear() + ' ' + esc(b.leftName || '') + (b.rightName ? ' · ' + esc(b.rightName) : '') + badge;
 
     var bn = document.getElementById('cloud-banner');
     if (bn) {
@@ -622,7 +616,6 @@
     document.getElementById('ic-search').innerHTML = ICON('search');
     document.getElementById('ic-lock').innerHTML = ICON('lock');
     document.getElementById('ic-headset').innerHTML = ICON('shield');
-    document.getElementById('ic-support').innerHTML = ICON('chat');
     document.getElementById('ic-x1').innerHTML = ICON('x');
     document.getElementById('ic-x2').innerHTML = ICON('x');
     document.getElementById('ic-sup-hd').innerHTML = ICON('chat');
