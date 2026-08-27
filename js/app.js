@@ -55,50 +55,148 @@
       BE.refresh = localStorage.getItem('sp_su_rt') || null;
       BE.exp = +localStorage.getItem('sp_su_exp') || 0;
       BE.email = localStorage.getItem('sp_su_email') || null;
+      /* Cloud tab se project URL/key badli ho to purana token us dusre project ka hai —
+         usse har write 401/403 hota hai. Isliye session phenk do, naya login clean rahega. */
+      var su = localStorage.getItem('sp_su_url') || '';
+      if (BE.token && su && su !== BE.url) { BE.token = null; BE.refresh = null; BE.exp = 0; localStorage.setItem('sp_su_at', ''); localStorage.setItem('sp_su_rt', ''); }
     } catch (e) {}
   })();
   SP.mode = function () { return BE.mode; };
   SP.isSupa = function () { return BE.mode === 'supabase'; };
 
+  /* =======================================================================
+     SESSION / RLS layer
+     portal_config par write RLS policy "to authenticated" hai -> PostgREST ko
+     request me VALID Supabase JWT chahiye. JWT na ho (ya expire ho jaye) to
+     request anon role se jaati hai aur Supabase 403 "row-level security" deta
+     hai — isliye zyadatar "save nahi hua" cases ka matlab policy kharab hona
+     nahi, balki session ka na hona/expire hona hai.
+     Neeche wala layer isi ko theek karta hai:
+       • write se pehle ensureAuth() — expired JWT ko refresh token se taaza karo
+       • refresh fail ho to saaf "login kariye" error (401), RLS ka_bhoot nahi
+       • 401/403 aaye to ek baar refresh karke retry (tab khula raha ho to bhi)
+       • H() writes ke liye anon key par kabhi silently fallback NAHI karta
+     ======================================================================= */
+  var FIX_SQL = 'supabase-rls-fix.sql';
+  var NO_SESSION_MSG = 'Aap is browser me logged-in nahi ho (ya session expire ho gaya), isliye Supabase ne RLS par write rok diya. ' +
+    'Policy me koi badlav karne ki zarurat nahi — bas Admin → Login dobara kariye (draft safe hai).';
+
   function err(m, code) { var e = new Error(m); e.code = code; return e; }
+  function authErr(m) { var e = err(m, 401); e.needLogin = true; return e; }
+  function sleep(ms) { return new Promise(function (z) { setTimeout(z, ms); }); }
+
+  /* supabase access token (JWT) ke claims: role / exp / email */
+  function jwtOf(t) {
+    try {
+      var p = String(t || '').split('.')[1]; if (!p) return null;
+      p = p.replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) p += '=';
+      return JSON.parse(decodeURIComponent(escape(atob(p))));
+    } catch (e) { return null; }
+  }
   function tok() { return (BE.token && (BE.exp === 0 || BE.exp > Date.now() + 20000)) ? BE.token : null; }
+  function haveSession() { return !!(BE.token && (BE.exp === 0 || BE.exp > Date.now() + 5000)); }
   function suStore(j) {
     BE.token = j.access_token || null;
     BE.refresh = j.refresh_token || null;
     BE.exp = j.expires_in ? Date.now() + j.expires_in * 1000 : 0;
+    /* expires_in na ho to JWT ke exp claim se expiry nikalo — warna token
+       expire hone par bhi code use karta rehta hai aur Supabase 401/403 deta hai */
+    if (BE.token && !BE.exp) { var cl = jwtOf(BE.token); if (cl && cl.exp) BE.exp = cl.exp * 1000; }
+    if (!BE.token) BE.exp = 0;
     if (j.user && j.user.email) BE.email = j.user.email;
     try {
       localStorage.setItem('sp_su_at', BE.token || '');
       localStorage.setItem('sp_su_rt', BE.refresh || '');
       localStorage.setItem('sp_su_exp', String(BE.exp || 0));
       localStorage.setItem('sp_su_email', BE.email || '');
+      localStorage.setItem('sp_su_url', BE.url || '');
     } catch (e) {}
   }
-  async function suRefresh() {
-    if (!BE.refresh) return false;
+  function suClear() {
+    BE.token = null; BE.refresh = null; BE.exp = 0;
     try {
-      var r = await fetch(BE.url + '/auth/v1/token?grant_type=refresh_token', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
-        body: JSON.stringify({ refresh_token: BE.refresh })
-      });
-      if (!r.ok) return false;
-      suStore(await r.json()); return true;
-    } catch (e) { return false; }
+      localStorage.setItem('sp_su_at', ''); localStorage.setItem('sp_su_rt', '');
+      localStorage.setItem('sp_su_exp', '0');
+    } catch (e) {}
   }
-  function H(extra) {
-    var h = { 'apikey': BE.key, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (tok() || BE.key) };
+  var _refreshing = null;
+  async function suRefresh(force) {
+    if (!BE.refresh) return false;
+    if (!force && haveSession() && (!BE.exp || BE.exp > Date.now() + 60000)) return true;   // abhi fresh hai
+    if (_refreshing) return _refreshing;                                                     // 2 jagah se ek saath -> ek hi request
+    _refreshing = (async function () {
+      try {
+        var r = await fetch(BE.url + '/auth/v1/token?grant_type=refresh_token', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
+          body: JSON.stringify({ refresh_token: BE.refresh })
+        });
+        if (!r.ok) {
+          /* refresh token hi reject (revoke/expire) -> session khatam; network/server error par mat todo */
+          if (r.status === 400 || r.status === 401 || r.status === 403) suClear();
+          return false;
+        }
+        suStore(await r.json()); return true;
+      } catch (e) { return false; }
+      finally { setTimeout(function () { _refreshing = null; }, 0); }
+    })();
+    return _refreshing;
+  }
+  /* write se pehle zaroori: fresh session. false = login karna padega */
+  async function ensureAuth(force) {
+    if (!force && tok()) return true;
+    if (await suRefresh(!!force)) return haveSession() || !!tok();
+    return haveSession();
+  }
+  function H(extra, needAuth) {
+    var t = tok();
+    if (needAuth && !t) throw authErr(NO_SESSION_MSG);
+    var h = { 'apikey': BE.key, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (t || BE.key) };
     return extra ? Object.assign(h, extra) : h;
   }
   async function jread(r) { try { return await r.json(); } catch (e) { return null; } }
-  function pubErr(status, j) {
+  /* ek hi jagah se fetch + text + json parse (error message ke liye txt chahiye) */
+  async function supaFetch(path, opts) {
+    var r = await fetch(BE.url + path, opts);
+    var txt = await r.text().catch(function () { return ''; });
+    var j = null; try { j = txt ? JSON.parse(txt) : null; } catch (e) {}
+    return { r: r, status: r.status, ok: r.ok, j: j, txt: txt };
+  }
+  /* session ki halat — Admin → Cloud → "Session check" isi ko dikhata hai */
+  SP.session = function () {
+    var cl = jwtOf(BE.token);
+    return {
+      mode: BE.mode, url: BE.url, hasUrl: !!(BE.url && BE.key),
+      loggedIn: haveSession(), tokenFresh: !!tok(), email: BE.email,
+      role: cl ? (cl.role || '?') : null, jwtExp: cl && cl.exp ? cl.exp * 1000 : null,
+      expiresIn: BE.exp ? Math.max(0, Math.round((BE.exp - Date.now()) / 1000)) : null,
+      hasRefresh: !!BE.refresh
+    };
+  };
+  function pubErr(status, j, txt) {
     var code = j && (j.code || j.details);
-    if (status === 404 || code === 'PGRST205' || /Could not find the table/i.test(String(code) + ' ' + JSON.stringify(j || {}))) {
-      return 'Supabase me table public.portal_config nahi mila — SQL Editor me supabase-setup.sql ek baar RUN kariye.';
+    var blob = String(txt || '') + ' ' + String(code) + ' ' + JSON.stringify(j || {});
+    if (status === 404 || code === 'PGRST205' || /Could not find the table/i.test(blob)) {
+      return 'Supabase me table public.portal_config nahi mila — SQL Editor me supabase-all.sql ek baar RUN kariye.';
     }
-    if (status === 401) return 'Session khatam ya login nahi — Admin → Cloud → Login kariye (Supabase user se). Anon key se likha nahi ja sakta (RLS).';
-    if (status === 403) return 'Supabase ne likhne se roka (RLS policy) — login authenticated role se hona chahiye; supabase-setup.sql me "portal_config_write_admin" policy hai.';
+    if (status === 401) {
+      return 'Session khatam ho gaya (Supabase ne JWT reject kiya) — Admin → Login dobara kariye, aapka draft safe rahega.';
+    }
+    if (status === 403) {
+      if (/permission denied/i.test(blob)) {
+        return 'Supabase ne table par permission denied diya (GRANT missing) — SQL Editor me ' + FIX_SQL + ' RUN kariye, wo grant bhi bana dega.';
+      }
+      if (!haveSession()) return NO_SESSION_MSG;
+      return 'RLS ne rok diya, halanki aap logged-in ho (' + (BE.email || 'authenticated') + '). ' +
+        'Is repo ki policy kisi extra "admin role" ki baat nahi karti — jo bhi logged-in Supabase user likh sakta hai — isliye ye 2 hi ho sakta hai: ' +
+        '(1) table par authenticated ko GRANT nahi, ya (2) koi sakht/ani policy lag gayi hai (jaise portal_config_write_one ka placeholder UUID). ' +
+        'SQL Editor me ' + FIX_SQL + ' ek baar RUN kariye (dono theek kar deta hai), phir Save dabaiye.';
+    }
+    if (status === 406 || status === 416) {
+      return 'Update chala par row wapas nahi aayi — aksar iska matlab RLS ne row chhupa di. ' + FIX_SQL + ' RUN karke dobara Save kariye.';
+    }
     if (status === 409) return 'Supabase ne conflict bataya (' + ((j && j.code) || 'PGRST409') + ') — upsert ke liye id primary key chahiye. SQL Editor me supabase-all.sql ek baar RUN karke dobara save kariye.';
-    return (j && (j.msg || j.error_description || j.error || j.message)) || ('Supabase error ' + status);
+    return (j && (j.msg || j.error_description || j.error || j.message)) || (txt && txt.slice(0, 200)) || ('Supabase error ' + status);
   }
 
   async function supaApi(path, method, body) {
@@ -135,14 +233,35 @@
       });
       j = await jread(r);
       if (!r.ok) throw err((j && (j.error_description || j.msg || j.error)) || ('Login fail (' + r.status + '). Supabase → Authentication → Users me user + "Confirm email" OFF check kariye.'), r.status);
-      suStore(j);
+      var sess = (j && j.session) || j;
+      if (!sess || !sess.access_token) {
+        throw err('Login to ho gaya, par Supabase ne session (JWT) nahi bheja — aam taur par iska matlab user ka email verify baaki hai. ' +
+          'Supabase → Authentication → Providers → Email me "Confirm email" OFF kariye (ya user par right-click → "Mark email as confirmed"), phir dobara login kariye.', 401);
+      }
+      suStore(sess);
+      /* JWT ka role check: 'authenticated' hi RLS pass karta hai */
+      var cl = jwtOf(sess.access_token);
+      if (cl && cl.role && cl.role !== 'authenticated') {
+        throw err('Supabase session ka role "' + cl.role + '" hai, "authenticated" nahi — isliye RLS likhne nahi dega. Project ka auth setup check kariye.', 403);
+      }
       return { ok: true, token: BE.token, mustChange: false, email: BE.email };
     }
-    if (path === '/api/admin/logout') { suStore({ access_token: null, refresh_token: null }); try { localStorage.removeItem('sp_token_v1'); } catch (e) {} return { ok: true }; }
+    if (path === '/api/admin/logout') { suClear(); try { localStorage.removeItem('sp_token_v1'); } catch (e) {} return { ok: true }; }
 
     if (path === '/api/admin/me') {
-      if (!tok() && !(await suRefresh())) throw err('Login required', 401);
+      if (!(await ensureAuth())) throw authErr(NO_SESSION_MSG);
       return { ok: true, mustChange: false, email: BE.email, updatedAt: BE.updatedAt, hasRow: BE.hasRow };
+    }
+
+    /* kaun likh raha hai + policy/grants ki halat (Admin → Cloud → Session check).
+       sp_whoami() supabase-all.sql / supabase-rls-fix.sql banata hai; na bhi ho to chalega. */
+    if (path === '/api/admin/whoami') {
+      var w = await supaFetch('/rest/v1/rpc/sp_whoami', { method: 'POST', headers: H(), body: '{}' });
+      if (!w.ok) {
+        if (/PGRST202|Could not find the function/i.test(w.txt || '')) return { ok: true, missing: true, session: SP.session() };
+        throw err('whoami fail (' + w.status + '): ' + String(w.txt || '').slice(0, 160), w.status);
+      }
+      return { ok: true, who: Array.isArray(w.j) ? w.j[0] : w.j, session: SP.session() };
     }
 
     if (path === '/api/admin/config' && method === 'PUT') {
@@ -150,45 +269,62 @@
       /* Ek hi UPSERT — POST ...?on_conflict=id + Prefer: resolution=merge-duplicates.
          Purana "PATCH, warna POST" 409 (duplicate key) deta tha jab BE.hasRow stale ho:
          row cloud par pehle se thi par local state kehti thi nahi (ya ulta). Ab PostgREST
-         khud conflict dekh kar update/insert chunta hai, isliye race hi nahi. */
-      await suRefresh();                              // write se pehle fresh JWT (expired token = 401/403)
-      var up = function () {
-        return fetch(BE.url + '/rest/v1/portal_config?on_conflict=id', {
+         khud conflict dekh kar update/insert chunta hai, isliye race hi nahi.
+         Write hamesha fresh JWT ke saath jaata hai (ensureAuth) — warna request anon role
+         se jaati hai aur RLS use 403 kar deti hai ("save nahi hua"). */
+      if (!(await ensureAuth())) throw authErr(NO_SESSION_MSG);
+      var whoCol = !!BE.email && !BE.noWhoCol;
+      var tryUp = function (withWho) {
+        var row = { id: 1, data: data };
+        if (withWho) row.updated_by = String(BE.email).slice(0, 120);
+        return supaFetch('/rest/v1/portal_config?on_conflict=id', {
           method: 'POST',
-          headers: H({ 'Prefer': 'resolution=merge-duplicates,return=representation' }),
-          body: JSON.stringify({ id: 1, data: data })
+          headers: H({ 'Prefer': 'resolution=merge-duplicates,return=representation' }, true),
+          body: JSON.stringify(row)
         });
       };
-      r = await up();
-      if (r.status === 408 || r.status === 429 || r.status >= 500) {   // timeout / rate-limit / server blip -> ek retry
-        await new Promise(function (z) { setTimeout(z, 700); });
-        await suRefresh();
-        r = await up();
+      var res = null;
+      for (var attempt = 0; attempt < 4; attempt++) {
+        res = await tryUp(whoCol);
+        if (res.ok) break;
+        /* purana table jisme updated_by column nahi (PGRST204) -> column hatake dobara */
+        if (res.status === 400 && whoCol && /updated_by/i.test(res.txt || '')) { whoCol = false; BE.noWhoCol = true; continue; }
+        /* 401/403: JWT stale/revoked ho sakta hai -> refresh karke ek try. Nakaam rahe to
+           error message hi bata dega ki login chahiye (ya policy/grant theek karo). */
+        if ((res.status === 401 || res.status === 403) && (await suRefresh(true))) continue;
+        if (res.status === 408 || res.status === 429 || res.status >= 500) { await sleep(700); await suRefresh(true); continue; }
+        break;
       }
-      j = await jread(r);
-      if (!r.ok) throw err(pubErr(r.status, j), r.status);
+      if (!res.ok) {
+        var we = err(pubErr(res.status, res.j, res.txt), res.status);
+        we.noRetry = true; we.needLogin = !haveSession();
+        if (res.status === 403) we.fixSql = FIX_SQL;
+        throw we;
+      }
+      j = res.j;
       var row = Array.isArray(j) ? j[0] : j;
-      if (!row) throw err('Supabase ne saved row wapas nahi bheji — dobara Save & Publish kariye.', 502);
+      if (!row) throw err('Supabase ne row wapas nahi bheji — 0 row update hua (RLS/read policy ne row chhupa di?). ' + FIX_SQL + ' RUN karke dobara Save kariye.', 406);
       BE.updatedAt = row.updated_at; BE.hasRow = true;
-      return { ok: true, config: row.data, savedAt: row.updated_at };
+      return { ok: true, config: row.data, savedAt: row.updated_at, savedBy: row.updated_by || BE.email };
     }
 
     if (path === '/api/admin/stats' && (method === undefined || method === 'GET')) {
-      r = await fetch(BE.url + '/rest/v1/portal_hits?select=key,hits,last_at&order=hits.desc&limit=800', { headers: H() });
-      if (!r.ok) throw err('Stats padhne se mana kiya (' + r.status + ') — authenticated policy chahiye.', r.status);
-      var rows = await jread(r) || []; var map = {};
+      var sr = await supaFetch('/rest/v1/portal_hits?select=key,hits,last_at&order=hits.desc&limit=800', { headers: H() });
+      if (!sr.ok) throw err('Stats padhne se mana kiya (' + sr.status + ') — portal_hits ki policy authenticated ke liye chahiye.', sr.status);
+      var rows = sr.j || []; var map = {};
       rows.forEach(function (x) { map[x.key] = +x.hits || 0; });
       return { ok: true, stats: map, rows: rows };
     }
     if (path === '/api/admin/stats' && method === 'POST') {
-      r = await fetch(BE.url + '/rest/v1/rpc/reset_hits', { method: 'POST', headers: H(), body: '{}' });
-      if (!r.ok) throw err('Counters reset nahi hue (' + r.status + ') — reset_hits sirf logged-in admin ke liye hai.', r.status);
+      var rr = await supaFetch('/rest/v1/rpc/reset_hits', { method: 'POST', headers: H(null, true), body: '{}' });
+      if (!rr.ok) throw err('Counters reset nahi hue: ' + pubErr(rr.status, rr.j, rr.txt), rr.status);
       return { ok: true };
     }
 
     if (path === '/api/admin/change-password') {
-      r = await fetch(BE.url + '/auth/v1/user', { method: 'PUT', headers: H(), body: JSON.stringify({ password: String((body && body.next) || '') }) });
-      if (!r.ok) { var ej2 = await jread(r); throw err((ej2 && (ej2.msg || ej2.error_description)) || ('Password change fail (' + r.status + '). Supabase Dashboard → Authentication → Users se bhi badal sakta hai.'), r.status); }
+      if (!(await ensureAuth())) throw authErr('Password badalne ke liye Supabase session chahiye — pehle Admin → Login kariye.');
+      var pr = await supaFetch('/auth/v1/user', { method: 'PUT', headers: H(null, true), body: JSON.stringify({ password: String((body && body.next) || '') }) });
+      if (!pr.ok) throw err((pr.j && (pr.j.msg || pr.j.error_description)) || ('Password change fail (' + pr.status + '). Supabase Dashboard → Authentication → Users se bhi badal sakta hai.'), pr.status);
       return { ok: true, supabase: true };
     }
 
@@ -235,12 +371,13 @@
     BE.mode = 'local';
   }
 
-  /* ek hi entry point — 401 aane par token refresh karke ek baar retry */
+  /* ek hi entry point — 401/403 par token refresh karke ek baar retry
+     (write path khud retry kar chuka hai -> e.noRetry waha set hota hai) */
   SP.api = function (path, method, body) {
     if (BE.mode !== 'supabase') return serverApi(path, method, body);
     return supaApi(path, method, body).catch(async function (e) {
-      if (e && e.code === 401 && path !== '/api/admin/login') {
-        if (await suRefresh()) return supaApi(path, method, body);
+      if (e && (e.code === 401 || e.code === 403) && !e.noRetry && path !== '/api/admin/login' && path !== '/api/admin/whoami') {
+        if (await suRefresh(true)) return supaApi(path, method, body);
       }
       throw e;
     });
@@ -496,7 +633,7 @@
       bn.innerHTML = show
         ? (SP.offlineView
             ? ICON('alert') + ' <span>Supabase abhi reachable nahi — <b>pichhli saved copy</b> dikha raha hoon. (Internet/URL check kariye.)</span>'
-            : ICON('upload') + ' <span>Cloud se connect ho gaya, par <b>portal_config</b> me abhi koi config nahi' + (SP.missingTable ? ' (table nahi mila — supabase-setup.sql chalaiye)' : '') + '.</span><button class="btn sm pri" id="bn-pub">Abhi publish kariye</button>')
+            : ICON('upload') + ' <span>Cloud se connect ho gaya, par <b>portal_config</b> me abhi koi config nahi' + (SP.missingTable ? ' (table nahi mila — supabase-all.sql chalaiye)' : '') + '.</span><button class="btn sm pri" id="bn-pub">Abhi publish kariye</button>')
         : '';
       var pb = document.getElementById('bn-pub');
       if (pb) pb.addEventListener('click', function () { SP.openAdmin(); setTimeout(function () { if (window.SPAdmin) SPAdmin.gotoCloud(); }, 300); });
@@ -616,6 +753,22 @@
     }, BE.poll * 1000);
   }
 
+  /* session zinda rakho: panel khula ho aur expiry qareeb ho to JWT aap se refresh
+     (1 ghante baad save karna = expired JWT = 403 "RLS ne roka", yahi common trap) */
+  function startAuthKeepAlive() {
+    if (typeof setInterval !== 'function') return;
+    setInterval(function () {
+      if (BE.mode !== 'supabase' || !BE.refresh || !BE.token || document.hidden) return;
+      if (!BE.exp) { var cl = jwtOf(BE.token); if (cl && cl.exp) BE.exp = cl.exp * 1000; }
+      if (BE.exp && BE.exp < Date.now() + 10 * 60 * 1000) suRefresh(true);
+    }, 4 * 60 * 1000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      if (BE.mode === 'supabase' && BE.refresh && BE.token && BE.exp && BE.exp < Date.now() + 60000) suRefresh(true);
+    });
+  }
+  SP.keepAuthAlive = startAuthKeepAlive;
+
   async function boot() {
     document.getElementById('ic-search').innerHTML = ICON('search');
     document.getElementById('ic-lock').innerHTML = ICON('lock');
@@ -651,16 +804,26 @@
     wireTopSearch();
     wireSupport();
     startPolling();
+    startAuthKeepAlive();
+    if (SP.isSupa() && BE.refresh && BE.token && (!BE.exp || BE.exp < Date.now() + 5 * 60000)) suRefresh(true);  // khulte hi JWT taaza karo
     document.getElementById('btn-admin').addEventListener('click', openAdmin);
     window.addEventListener('storage', function (ev) { // dusre tab me save kiya ho to refresh
       if (ev.key === LS_CFG && SP.server !== false) { try { SP.config = JSON.parse(ev.newValue); render(); toast('Portal refresh ho gaya (dusre tab se).', 'check'); } catch (e) {} }
+      /* dusre tab ne login/refresh kiya ho -> wahi token le lo. 2 tab ke alag-alag
+         refresh token ghumane se Supabase session revoke kar deta hai (reuse detection). */
+      if (ev.key === 'sp_su_at' || ev.key === 'sp_su_rt' || ev.key === 'sp_su_exp') {
+        try {
+          var at = localStorage.getItem('sp_su_at'), rt = localStorage.getItem('sp_su_rt'), ex = +localStorage.getItem('sp_su_exp') || 0;
+          if (at && at !== BE.token) { BE.token = at; BE.refresh = rt || BE.refresh; BE.exp = ex; }
+        } catch (e) {}
+      }
     });
     if (SP.needsPublish) toast('Cloud se connect ho gaya, par portal_config khali hai — banner ke button se Admin → Cloud → Publish kariye.', 'upload');
     else if (SP.offlineView) toast('Cloud/server dono reachable nahi — pichhli saved copy dikha raha hoon.', 'alert');
   }
   SP.boot = boot;
 
-  document.addEventListener('DOMContentLoaded', boot);  document.addEventListener('DOMContentLoaded', boot);
+  document.addEventListener('DOMContentLoaded', boot);   // (pehle 2 baar juda tha -> 2 poll loops + double listeners)
 
   function openAdmin() { if (window.SPAdmin) window.SPAdmin.open(); else toast('Admin script load nahi hua.', 'alert'); }
   SP.openAdmin = openAdmin;
