@@ -1,0 +1,1 @@
+{"name":"safety-portal-webbapp","version":"1.0.0","private":true,"scripts":{"start":"node dev/server.js","deploy":"node dev/deploy-to-supabase.js"},"engines":{"node":">=16"}}

@@ -1,0 +1,286 @@
+{
+  "version": 1,
+  "updatedAt": "2026-08-27T05:11:23.192Z",
+  "brand": {
+    "title": "SAFETY PORTAL",
+    "tagline": "",
+    "leftName": "Envess Infraventure Pvt Ltd",
+    "rightName": "TATA STEEL LTD.",
+    "logoIcon": "shield",
+    "rightIcon": "tata",
+    "theme": "navy"
+  },
+  "support": {
+    "enabled": true,
+    "heading": "SUPPORT",
+    "line1": "Contact for any technical issue",
+    "name": "Musahid",
+    "mobile": "9177785011",
+    "altMobile": "",
+    "email": "",
+    "developer": "Musahid",
+    "note": "Portal me koi bhi problem ho, ya naya section / link add karana ho — isi number par baat kariye."
+  },
+  "sections": [
+    {
+      "id": "sec-e23fcd6378",
+      "n": 1,
+      "title": "IMPORTANT LINKS",
+      "icon": "link",
+      "color": "indigo",
+      "type": "list",
+      "url": "",
+      "visible": true,
+      "prefix": "letters",
+      "note": "",
+      "search": null,
+      "items": [
+        {
+          "id": "itm-a0caae88fc",
+          "label": "Safety Policy & Manual",
+          "url": "",
+          "icon": "book",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-84c2f90596",
+      "n": 2,
+      "title": "COMMAND CENTRE",
+      "icon": "monitor",
+      "color": "green",
+      "type": "list",
+      "url": "",
+      "visible": true,
+      "prefix": "letters",
+      "note": "",
+      "search": null,
+      "items": [
+        {
+          "id": "itm-40b6819db9",
+          "label": "Real-time Dashboard",
+          "url": "",
+          "icon": "chart",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-b483a51c96",
+          "label": "Command Centre Violation Entry",
+          "url": "",
+          "icon": "clipboard",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-3def58060f",
+      "n": 3,
+      "title": "GLOBAL SAFETY OBSERVATION SYSTEM",
+      "icon": "eye",
+      "color": "blue",
+      "type": "list",
+      "url": "",
+      "visible": true,
+      "prefix": "letters",
+      "note": "",
+      "search": null,
+      "items": [
+        {
+          "id": "itm-1660672ea8",
+          "label": "Violation Entry",
+          "url": "",
+          "icon": "cone",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-d9959083f8",
+          "label": "Review and Monitoring System",
+          "url": "",
+          "icon": "search",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-e660e93e45",
+      "n": 4,
+      "title": "SAFETY MNGT SYSTEM",
+      "icon": "helmet",
+      "color": "orange",
+      "type": "list",
+      "url": "",
+      "visible": true,
+      "prefix": "letters",
+      "note": "",
+      "search": null,
+      "items": [
+        {
+          "id": "itm-78ff81d732",
+          "label": "Conduct DM",
+          "url": "",
+          "icon": "gavel",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-268ff59460",
+          "label": "VSPI",
+          "url": "",
+          "icon": "board",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-5ea695943a",
+          "label": "PPE MNGT System",
+          "url": "",
+          "icon": "goggles",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-23b36f3f11",
+      "n": 5,
+      "title": "EMPLOYEE SEARCH",
+      "icon": "user-search",
+      "color": "purple",
+      "type": "search",
+      "url": "",
+      "visible": true,
+      "prefix": "none",
+      "note": "",
+      "search": {
+        "placeholder": "Search Employee ID / Name...",
+        "urlTemplate": "",
+        "buttonLabel": "SEARCH",
+        "icon": "search",
+        "help": "Employee ID ya naam daaliye, phir ENTER."
+      },
+      "items": []
+    },
+    {
+      "id": "sec-f2e6e1ef82",
+      "n": 6,
+      "title": "INCIDENT SHARING AND LEARNING",
+      "icon": "alert",
+      "color": "red",
+      "type": "list",
+      "url": "",
+      "visible": true,
+      "prefix": "letters",
+      "note": "",
+      "search": null,
+      "items": [
+        {
+          "id": "itm-807239f178",
+          "label": "NEAR MISS INTERNAL",
+          "url": "",
+          "icon": "impact",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-507fbc5167",
+          "label": "LTI / FATAL and other TSL OR NON TSI Incident",
+          "url": "",
+          "icon": "report",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "sec-ae8ffd46bf",
+      "n": 7,
+      "title": "SOP",
+      "icon": "book-open",
+      "color": "teal",
+      "type": "grid",
+      "url": "",
+      "visible": true,
+      "prefix": "letters",
+      "note": "",
+      "search": null,
+      "items": [
+        {
+          "id": "itm-e4518a1cd3",
+          "label": "TRANSPORT PARK",
+          "url": "",
+          "icon": "truck",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-18972ef5aa",
+          "label": "Weigh Bridge",
+          "url": "",
+          "icon": "scale",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-7dff319bf3",
+          "label": "All Weigh bridge",
+          "url": "",
+          "icon": "scale",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-e4faa2f79d",
+          "label": "All equipment",
+          "url": "",
+          "icon": "gear",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        },
+        {
+          "id": "itm-05787f6758",
+          "label": "scrap yard",
+          "url": "",
+          "icon": "recycle",
+          "openIn": "new",
+          "note": "",
+          "visible": true,
+          "children": []
+        }
+      ]
+    }
+  ]
+}
