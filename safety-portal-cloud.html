@@ -214,6 +214,8 @@ svg { width: 100%; height: 100%; display: block; }
 .sup-who .rl { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
 .contact { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 13px; text-decoration: none; transition: .16s; background:#fff; }
 .contact:hover { border-color: var(--green); background: #f4fbf6; transform: translateX(3px); }
+/* Header Support is WhatsApp-only; hide phone/call/copy actions defensively. */
+#veil-support .contact:not(.wa), #veil-support .acts { display: none !important; }
 .contact .ci { width: 36px; height: 36px; padding: 8px; border-radius: 10px; background: rgba(46,125,50,.12); color: var(--green); flex: 0 0 auto; display:grid; place-items:center; }
 .contact .cl { display: block; font-size: 11px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .8px; font-weight: 700; }
 .contact .cv { display: block; font-size: 17px; font-weight: 800; letter-spacing: .4px; margin-top: 2px; }
