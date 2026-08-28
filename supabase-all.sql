@@ -45,6 +45,14 @@ create policy "portal_config_insert_admin" on public.portal_config
   for insert to authenticated
   with check ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
 
+-- 2b) GRANTS — RLS se PEHLE table ka privilege aata hai. Ye na ho to PostgREST 403
+--     deta hai aur browser me error "RLS ne roka" jaisa dikhta hai (do baar ho chuka hai).
+grant usage on schema public to anon, authenticated, service_role;
+grant select                 on table public.portal_config to anon;
+grant select, insert, update on table public.portal_config to authenticated;
+grant select                 on table public.portal_hits  to authenticated;
+alter table public.portal_config add column if not exists updated_by text;
+
 -- 3) Click counter (kaun sa button kitna click hua) -----------------------
 create table if not exists public.portal_hits (
   key      text primary key,
@@ -85,11 +93,54 @@ on conflict (id) do nothing;
 -- create policy "portal_config_read_login_only" on public.portal_config
 --   for select to authenticated using (true);
 
--- 4c) Sirf EK admin user hi likhe (zyada tight) — apna user id daalke ye chalaiye:
+-- 4c) Sirf EK admin user hi likhe (zyada tight) — EMAIL se kariye, UUID copy karne me
+--     galti hoti hai (placeholder 'aaaa-bbbb-...' chhoot gaya to SAB write 403 hote hain):
 -- drop policy if exists "portal_config_write_admin" on public.portal_config;
--- create policy "portal_config_write_one" on public.portal_config
---   for update to authenticated using (auth.uid() = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
---   with check (auth.uid() = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+-- create policy "portal_config_write_admin" on public.portal_config
+--   for update to authenticated
+--   using (auth.uid() = (select id from auth.users where email = 'aapka@email.com'))
+--   with check (auth.uid() = (select id from auth.users where email = 'aapka@email.com'));
+-- drop policy if exists "portal_config_insert_admin" on public.portal_config;
+-- create policy "portal_config_insert_admin" on public.portal_config
+--   for insert to authenticated
+--   with check (auth.uid() = (select id from auth.users where email = 'aapka@email.com'));
+
+-- 4d) Admin panel → Cloud → "Session check" ke liye (role/policy/grants ek call me):
+create or replace function public.sp_whoami() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_claims jsonb := null; v_jwt_role text; v_uid uuid; v_email text; v_confirmed boolean;
+  v_policies jsonb; v_rls boolean;
+begin
+  begin v_claims := nullif(current_setting('request.jwt.claims', true), '')::jsonb;
+  exception when others then v_claims := null; end;
+  v_jwt_role := coalesce(v_claims->>'role', 'anon');
+  if v_jwt_role = 'anon' then
+    return jsonb_build_object('jwt_role','anon','uid',null,
+      'note','Request me session JWT nahi tha -> role = anon -> portal_config par RLS write rok dega. Admin panel me login kariye.');
+  end if;
+  begin v_uid := auth.uid(); exception when others then v_uid := null; end;
+  if v_uid is not null then
+    begin select u.email, (u.email_confirmed_at is not null) into v_email, v_confirmed from auth.users u where u.id = v_uid;
+    exception when others then v_email := null; v_confirmed := null; end;
+  end if;
+  select relrowsecurity into v_rls from pg_class where oid = 'public.portal_config'::regclass;
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'name', p.polname,
+           'cmd', case p.polcmd when 'r' then 'select' when 'a' then 'insert' when 'w' then 'update'
+                                when 'd' then 'delete' when '*' then 'all' else p.polcmd::text end,
+           'roles', coalesce((select jsonb_agg(r.rolname) from pg_roles r where r.oid = any(p.polroles)), '[]'::jsonb)
+         )), '[]'::jsonb) into v_policies
+    from pg_policy p where p.polrelid = 'public.portal_config'::regclass;
+  return jsonb_build_object('jwt_role', v_jwt_role, 'uid', v_uid, 'email', v_email,
+    'email_confirmed', v_confirmed, 'rls_enabled', v_rls, 'policies', v_policies,
+    'grants', jsonb_build_object(
+      'insert', has_table_privilege('authenticated', 'public.portal_config', 'insert'),
+      'update', has_table_privilege('authenticated', 'public.portal_config', 'update'),
+      'select_anon', has_table_privilege('anon', 'public.portal_config', 'select')));
+end $$;
+revoke execute on function public.sp_whoami() from public;
+grant execute on function public.sp_whoami() to anon, authenticated;
 
 -- 5) (optional) Realtime — ek dusre browser me publish turant dikhe
 do $$ begin
@@ -105,6 +156,15 @@ select id, updated_at, (select count(*) from jsonb_array_elements(data->'section
 -- Kya-kya bana, check:
 select table_name from information_schema.tables where table_schema='public' and table_name in ('portal_config','portal_hits');
 select polname, polcmd::text from pg_policy where polrelid = 'public.portal_config'::regclass;
+-- Expected: portal_config_read_all (r), portal_config_write_admin (w), portal_config_insert_admin (a)
+-- Grants bhi zaroori hain (na mile to 403 "RLS" jaisa hi dikhta hai):
+select grantee, privilege_type from information_schema.role_table_grants
+ where table_schema='public' and table_name='portal_config' order by 1,2;
+-- Expected: anon|select, authenticated|select, authenticated|insert, authenticated|update
+
+-- ⚠ Save 403 kare to: (1) Admin → Cloud → Session check (kaunsa role ja raha hai),
+--    (2) supabase-rls-fix.sql RUN kariye. Policy me "admin role" jaisa koi check nahi —
+--    jo bhi logged-in Supabase user likh sakta hai; anon (bina login) nahi.
 
 
 -- =====================================================================

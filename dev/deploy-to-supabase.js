@@ -4,12 +4,12 @@
    'portal' bucket me upload kar deta hai → site global URL par aa jati hai.
    (koi npm package nahi chahiye, sirf Node)
 
-   Use:  node test/deploy-to-supabase.js
-         SUPABASE_URL=https://xxx.supabase.co SUPABASE_KEY=sb_publishable_xxx node test/deploy-to-supabase.js
+   Use:  node dev/deploy-to-supabase.js
+         SUPABASE_URL=https://xxx.supabase.co SUPABASE_KEY=sb_publishable_xxx node dev/deploy-to-supabase.js
          BASE=https://xxx/storage/v1/object/public/portal/index.html   (jo link milega)
 
-   Pehle supabase-setup.sql + supabase-hosting.sql chalana zaroori hai
-   (hosting wali file me temporary upload policy hai; baad me supabase-lockdown.sql).
+   Pehle supabase-all.sql chalana zaroori hai (usme 'portal' bucket + temporary upload
+   policy hai); files upload hone ke BAAD supabase-lockdown.sql chalaiye.
    ============================================================================= */
 const fs = require('fs');
 const path = require('path');

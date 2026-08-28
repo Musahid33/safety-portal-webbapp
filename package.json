@@ -1,1 +1,14 @@
-{"name":"safety-portal-webbapp","version":"1.0.0","private":true,"scripts":{"start":"node dev/server.js","deploy":"node dev/deploy-to-supabase.js"},"engines":{"node":">=16"}}
+{
+  "name": "safety-portal-webbapp",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node dev/server.js",
+    "deploy": "node dev/deploy-to-supabase.js",
+    "test:rls": "node dev/test-rls.js",
+    "build:single": "node dev/build-single.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

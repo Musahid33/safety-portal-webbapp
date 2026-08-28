@@ -1,7 +1,8 @@
 /* =============================================================
    SAFETY PORTAL — backend config   [ Supabase mode: LIVE ]
    =============================================================
-   Supabase (qeuxfyklxtrpvwrszqsr) connected hai -> ek baar supabase-setup.sql chala lijiye,
+   Supabase (qeuxfyklxtrpvwrszqsr) connected hai -> ek baar supabase-all.sql chala lijiye
+   (table + RLS + grants + seed). Save 403 kare to supabase-rls-fix.sql RUN kariye,
    uske baad Admin panel ka har badlav SAB users ko dikhega (global, koi server nahi).
    mode:'auto' = cloud mile to Supabase, na mile to Node server (data/config.json).
    ============================================================= */
