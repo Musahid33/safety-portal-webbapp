@@ -1,19 +1,15 @@
--- =====================================================================
---  SAFETY PORTAL — Step 3 (ZAROORI): deploy ke baad site ko lock karo
---  supabase-hosting.sql ne anon ko upload/delete karne diya tha (deploy ke
---  liye). Wo khatra hatane ke liye ye file chalaiye — upload complete hone ke BAAD.
---  Supabase Dashboard → SQL Editor → RUN
+-- SAFETY PORTAL — optional post-deploy Storage lockdown
 --
---  ⚠ Ise chalane ke baad SITE FILES (index.html/js/css) badalne ke liye
---     Dashboard → Storage → portal → Upload karna hoga (ya policy dobara on kariye).
---     Portal ka CONFIG (section / button / URL) isse bilkul nahi badalta —
---     wo hamesha Admin panel se hi change hoga, aur sab users ko dikhega.
--- =====================================================================
+-- supabase-all.sql now gives deploy permission only to authenticated users whose
+-- App Metadata has role=admin. Run this after a deployment if the site files
+-- should be immutable from the browser; future deploys can be done from the
+-- Supabase Dashboard or by temporarily recreating the admin-only policies.
+-- The public portal remains readable, and portal_config is unaffected.
 
 drop policy if exists "portal_deploy_insert" on storage.objects;
 drop policy if exists "portal_deploy_update" on storage.objects;
 drop policy if exists "portal_deploy_delete" on storage.objects;
 
--- bacha hua check: sirf "portal_read" dikhna chahiye
+-- Only portal_read should remain for this bucket.
 select polname from pg_policy
  where polrelid = 'storage.objects'::regclass and polname like 'portal%';

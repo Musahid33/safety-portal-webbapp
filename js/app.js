@@ -40,7 +40,7 @@
      config.js me window.SP_BACKEND set karke mode chunta hai.
      ======================================================================= */
   var BE = SP.BE = { mode: 'server', url: '', key: '', token: null, refresh: null, exp: 0,
-                     email: null, updatedAt: null, hasRow: true, poll: 25 };
+                     email: null, userId: null, isAdmin: false, updatedAt: null, hasRow: true, poll: 25 };
   var lastSeen = null;
 
   (function readBackendCfg() {
@@ -55,51 +55,176 @@
       BE.refresh = localStorage.getItem('sp_su_rt') || null;
       BE.exp = +localStorage.getItem('sp_su_exp') || 0;
       BE.email = localStorage.getItem('sp_su_email') || null;
+      if (BE.token && !BE.exp) { var initialClaims = jwtOf(BE.token); if (initialClaims && initialClaims.exp) BE.exp = initialClaims.exp * 1000; }
+      /* A session belongs to one Supabase project. Never send a token saved for
+         another configured project — that produces misleading RLS failures and
+         can expose a credential to the wrong endpoint after a config change. */
+      var su = localStorage.getItem('sp_su_url') || '';
+      if (BE.token && su && su !== BE.url) {
+        BE.token = null; BE.refresh = null; BE.exp = 0; BE.email = null;
+        localStorage.removeItem('sp_su_at'); localStorage.removeItem('sp_su_rt');
+        localStorage.removeItem('sp_su_exp'); localStorage.removeItem('sp_su_email');
+      }
     } catch (e) {}
   })();
   SP.mode = function () { return BE.mode; };
   SP.isSupa = function () { return BE.mode === 'supabase'; };
 
+  /* =======================================================================
+     SESSION / ADMIN AUTHORIZATION
+     Supabase's public anon key is deliberately shipped to the browser. It is
+     not an administrator credential. Every administrative operation therefore
+     needs both a live JWT and an admin app_metadata claim; database RLS is the
+     final enforcement point for direct API calls.
+     ======================================================================= */
+  var FIX_SQL = 'supabase-rls-fix.sql';
+  var NO_SESSION_MSG = 'Aap is browser me logged-in nahi ho (ya session expire ho gaya), isliye Supabase ne write rok diya. ' +
+    'Policy me badlav ki zarurat nahi — bas Admin → Login dobara kariye (draft safe hai).';
+
   function err(m, code) { var e = new Error(m); e.code = code; return e; }
-  function tok() { return (BE.token && (BE.exp === 0 || BE.exp > Date.now() + 20000)) ? BE.token : null; }
-  function suStore(j) {
-    BE.token = j.access_token || null;
-    BE.refresh = j.refresh_token || null;
-    BE.exp = j.expires_in ? Date.now() + j.expires_in * 1000 : 0;
-    if (j.user && j.user.email) BE.email = j.user.email;
+  function authErr(m) { var e = err(m, 401); e.needLogin = true; return e; }
+  function sleep(ms) { return new Promise(function (z) { setTimeout(z, ms); }); }
+
+  /* JWT ke claims sirf expiry/diagnostics ke liye padhe jaate hain. Authorization
+     ka bharosa Supabase /auth/v1/user aur Postgres RLS par hi hai. */
+  function jwtOf(t) {
     try {
-      localStorage.setItem('sp_su_at', BE.token || '');
-      localStorage.setItem('sp_su_rt', BE.refresh || '');
+      var p = String(t || '').split('.')[1]; if (!p) return null;
+      p = p.replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) p += '=';
+      return JSON.parse(decodeURIComponent(escape(atob(p))));
+    } catch (e) { return null; }
+  }
+  function tok() { return (BE.token && (BE.exp === 0 || BE.exp > Date.now() + 20000)) ? BE.token : null; }
+  function haveSession() { return !!(BE.token && (BE.exp === 0 || BE.exp > Date.now() + 5000)); }
+
+  function suStore(j) {
+    var s = j && j.session && j.session.access_token ? j.session : (j || {});
+    BE.token = s.access_token || null;
+    BE.refresh = s.refresh_token || null;
+    BE.exp = s.expires_in ? Date.now() + Number(s.expires_in) * 1000 : 0;
+    /* Some Supabase-compatible responses omit expires_in. Derive it from the
+       signed JWT so an expired token can never silently become the anon key. */
+    if (BE.token && !BE.exp) {
+      var cl = jwtOf(BE.token); if (cl && cl.exp) BE.exp = cl.exp * 1000;
+    }
+    if (!BE.token) { BE.exp = 0; BE.refresh = null; BE.email = null; BE.userId = null; BE.isAdmin = false; }
+    if (s.user && s.user.email) BE.email = s.user.email;
+    if (s.user && s.user.id) BE.userId = s.user.id;
+    try {
+      if (BE.token) localStorage.setItem('sp_su_at', BE.token); else localStorage.removeItem('sp_su_at');
+      if (BE.refresh) localStorage.setItem('sp_su_rt', BE.refresh); else localStorage.removeItem('sp_su_rt');
       localStorage.setItem('sp_su_exp', String(BE.exp || 0));
-      localStorage.setItem('sp_su_email', BE.email || '');
+      if (BE.email) localStorage.setItem('sp_su_email', BE.email); else localStorage.removeItem('sp_su_email');
+      localStorage.setItem('sp_su_url', BE.url || '');
     } catch (e) {}
   }
-  async function suRefresh() {
-    if (!BE.refresh) return false;
+  function suClear() {
+    BE.token = null; BE.refresh = null; BE.exp = 0; BE.email = null; BE.userId = null; BE.isAdmin = false;
     try {
-      var r = await fetch(BE.url + '/auth/v1/token?grant_type=refresh_token', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
-        body: JSON.stringify({ refresh_token: BE.refresh })
-      });
-      if (!r.ok) return false;
-      suStore(await r.json()); return true;
-    } catch (e) { return false; }
+      localStorage.removeItem('sp_su_at'); localStorage.removeItem('sp_su_rt');
+      localStorage.removeItem('sp_su_exp'); localStorage.removeItem('sp_su_email');
+    } catch (e) {}
   }
-  function H(extra) {
-    var h = { 'apikey': BE.key, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (tok() || BE.key) };
+
+  /* Refresh-token rotation means two concurrent refreshes can revoke a valid
+     session. Deduplicate refresh calls made by polling, save, and keep-alive. */
+  var _refreshing = null;
+  async function suRefresh(force) {
+    if (!BE.refresh) return false;
+    if (!force && haveSession() && (!BE.exp || BE.exp > Date.now() + 60000)) return true;
+    if (_refreshing) return _refreshing;
+    var refreshToken = BE.refresh;
+    _refreshing = (async function () {
+      try {
+        var r = await fetch(BE.url + '/auth/v1/token?grant_type=refresh_token', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+        if (!r.ok) {
+          /* A rejected refresh token is definitive; a network failure is not. */
+          if (r.status === 400 || r.status === 401 || r.status === 403) suClear();
+          return false;
+        }
+        var next = await jread(r);
+        if (!next || !(next.access_token || (next.session && next.session.access_token))) { suClear(); return false; }
+        suStore(next); return !!tok();
+      } catch (e) { return false; }
+      finally { setTimeout(function () { _refreshing = null; }, 0); }
+    })();
+    return _refreshing;
+  }
+  async function ensureAuth(force) {
+    if (!force && tok()) return true;
+    if (await suRefresh(!!force)) return !!tok();
+    return !force && haveSession();
+  }
+
+  function H(extra, needAuth) {
+    var t = tok();
+    if (needAuth && !t) throw authErr(NO_SESSION_MSG);
+    var h = { 'apikey': BE.key, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (t || BE.key) };
     return extra ? Object.assign(h, extra) : h;
   }
   async function jread(r) { try { return await r.json(); } catch (e) { return null; } }
-  function pubErr(status, j) {
-    var code = j && (j.code || j.details);
-    if (status === 404 || code === 'PGRST205' || /Could not find the table/i.test(String(code) + ' ' + JSON.stringify(j || {}))) {
-      return 'Supabase me table public.portal_config nahi mila — SQL Editor me supabase-setup.sql ek baar RUN kariye.';
-    }
-    if (status === 401) return 'Session khatam ya login nahi — Admin → Cloud → Login kariye (Supabase user se). Anon key se likha nahi ja sakta (RLS).';
-    if (status === 403) return 'Supabase ne likhne se roka (RLS policy) — admin user ke App Metadata me {"role":"admin"} set karke sign out/in kariye. portal_config_write_admin policy authenticated admin ko hi INSERT/UPDATE deti hai.';
-    if (status === 409) return 'Supabase ne conflict bataya (' + ((j && j.code) || 'PGRST409') + ') — upsert ke liye id primary key chahiye. SQL Editor me supabase-all.sql ek baar RUN karke dobara save kariye.';
-    return (j && (j.msg || j.error_description || j.error || j.message)) || ('Supabase error ' + status);
+  async function supaFetch(path, opts) {
+    var r = await fetch(BE.url + path, opts);
+    var txt = await r.text().catch(function () { return ''; });
+    var j = null; try { j = txt ? JSON.parse(txt) : null; } catch (e) {}
+    return { r: r, status: r.status, ok: r.ok, j: j, txt: txt };
   }
+  function sessionError(message) { return authErr(message || NO_SESSION_MSG); }
+
+  /* Is endpoint se aaya hua 403 session-vs-policy error ko actionable banayein,
+     magar raw response me credential ya full database detail kabhi na dikhayein. */
+  function pubErr(status, j, txt) {
+    var code = j && (j.code || j.details);
+    var blob = String(txt || '') + ' ' + String(code || '') + ' ' + JSON.stringify(j || {});
+    if (status === 404 || code === 'PGRST205' || /Could not find the table/i.test(blob)) {
+      return 'Supabase me table public.portal_config nahi mila — SQL Editor me supabase-all.sql ek baar RUN kariye.';
+    }
+    if (status === 401) return 'Session khatam ho gaya — Admin → Login dobara kariye (aapka draft safe rahega).';
+    if (status === 403) {
+      if (/permission denied/i.test(blob)) return 'Supabase ne table par permission denied diya (GRANT missing) — SQL Editor me ' + FIX_SQL + ' RUN kariye.';
+      if (!haveSession()) return NO_SESSION_MSG;
+      return 'RLS ne rok diya, halanki aap logged-in admin ho (' + (BE.email || 'authenticated') + '). ' +
+        'Policy, GRANT ya admin app_metadata check kariye — SQL Editor me ' + FIX_SQL + ' ek baar RUN karke dobara Save kariye.';
+    }
+    if (status === 406 || status === 416) return 'Update chala par row wapas nahi aayi — ' + FIX_SQL + ' RUN karke dobara Save kariye.';
+    if (status === 409) return 'Supabase ne conflict bataya (' + ((j && j.code) || 'PGRST409') + ') — upsert ke liye id primary key chahiye.';
+    return (j && (j.msg || j.error_description || j.error || j.message)) || (txt && txt.slice(0, 200)) || ('Supabase error ' + status);
+  }
+
+  async function requireAdminSession() {
+    if (!(await ensureAuth())) throw sessionError();
+    var u = await supaFetch('/auth/v1/user', { headers: H(null, true) });
+    if (!u.ok || !u.j || !u.j.id) {
+      if (u.status === 401) suClear();
+      throw sessionError('Supabase session valid nahi hai — dobara Admin login kariye.');
+    }
+    var user = Array.isArray(u.j) ? u.j[0] : u.j;
+    var role = user.app_metadata && user.app_metadata.role;
+    if (role !== 'admin') {
+      BE.isAdmin = false;
+      throw err('Is Supabase user ko admin permission nahi hai. Authentication → Users me App Metadata {"role":"admin"} set karke dobara login kariye.', 403);
+    }
+    BE.email = user.email || BE.email; BE.userId = user.id; BE.isAdmin = true;
+    try { if (BE.email) localStorage.setItem('sp_su_email', BE.email); } catch (e) {}
+    return user;
+  }
+
+  /* session ki halat — Admin → Cloud → Session check isi ko dikhata hai */
+  SP.session = function () {
+    var cl = jwtOf(BE.token);
+    return {
+      mode: BE.mode, url: BE.url, hasUrl: !!(BE.url && BE.key),
+      loggedIn: haveSession(), tokenFresh: !!tok(), email: BE.email,
+      role: cl ? (cl.role || '?') : null, isAdmin: !!BE.isAdmin,
+      jwtExp: cl && cl.exp ? cl.exp * 1000 : null,
+      expiresIn: BE.exp ? Math.max(0, Math.round((BE.exp - Date.now()) / 1000)) : null,
+      hasRefresh: !!BE.refresh
+    };
+  };
 
   async function supaApi(path, method, body) {
     var r, j;
@@ -119,6 +244,7 @@
     }
 
     if (path === '/api/hit') {
+      /* Hit recording is intentionally public; never attach a stored admin JWT. */
       try {
         await fetch(BE.url + '/rest/v1/rpc/record_hit', {
           method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
@@ -134,81 +260,109 @@
         body: JSON.stringify({ email: String((body && body.email) || '').trim(), password: String((body && body.password) || '') })
       });
       j = await jread(r);
-      if (!r.ok) throw err((j && (j.error_description || j.msg || j.error)) || ('Login fail (' + r.status + '). Supabase → Authentication → Users me user + "Confirm email" OFF check kariye.'), r.status);
-      suStore(j);
+      if (!r.ok) throw err((j && (j.error_description || j.msg || j.error)) || ('Login fail (' + r.status + '). Supabase user ya password check kariye.'), r.status);
+      var sess = (j && j.session) || j;
+      if (!sess || !sess.access_token) {
+        throw authErr('Login to ho gaya, par Supabase ne admin session (JWT) nahi bheja — Supabase me Confirm email check kariye, phir dobara login kariye.');
+      }
+      suStore(sess);
+      var cl = jwtOf(sess.access_token);
+      if (cl && cl.role && cl.role !== 'authenticated') {
+        suClear();
+        throw err('Supabase session ka role "' + cl.role + '" hai, "authenticated" nahi — login setup check kariye.', 403);
+      }
+      /* Login is not complete until the server confirms admin metadata. */
+      try { await requireAdminSession(); }
+      catch (e) { suClear(); throw e; }
       return { ok: true, token: BE.token, mustChange: false, email: BE.email };
     }
-    if (path === '/api/admin/logout') { suStore({ access_token: null, refresh_token: null }); try { localStorage.removeItem('sp_token_v1'); } catch (e) {} return { ok: true }; }
-
-    async function requireAdminSession() {
-      if (!tok() && !(await suRefresh())) throw err('Login required — pehle Supabase admin se login kariye.', 401);
-      var ur = await fetch(BE.url + '/auth/v1/user', { headers: H() });
-      var user = await jread(ur);
-      if (!ur.ok || !user || !user.id) throw err('Session valid nahi hai — dobara Supabase admin login kariye.', 401);
-      var appRole = user.app_metadata && user.app_metadata.role;
-      if (appRole !== 'admin') throw err('Is Supabase user ko admin permission nahi hai. Authentication → Users me App Metadata {"role":"admin"} set karke dobara login kariye.', 403);
-      BE.email = user.email || BE.email;
-      return user;
-    }
+    if (path === '/api/admin/logout') { suClear(); try { localStorage.removeItem('sp_token_v1'); } catch (e) {} return { ok: true }; }
 
     if (path === '/api/admin/me') {
       await requireAdminSession();
       return { ok: true, mustChange: false, email: BE.email, updatedAt: BE.updatedAt, hasRow: BE.hasRow };
     }
 
-    if (path === '/api/admin/config' && method === 'PUT') {
-      var data = body && body.config ? body.config : body;
-      /* Do not attempt a write with the public anon key. Verify both the
-         Supabase session and its admin app_metadata before the upsert. */
+    if (path === '/api/admin/whoami') {
       await requireAdminSession();
-      /* Ek hi UPSERT — POST ...?on_conflict=id + Prefer: resolution=merge-duplicates.
-         Purana "PATCH, warna POST" 409 (duplicate key) deta tha jab BE.hasRow stale ho:
-         row cloud par pehle se thi par local state kehti thi nahi (ya ulta). Ab PostgREST
-         khud conflict dekh kar update/insert chunta hai, isliye race hi nahi. */
-      await suRefresh();                              // write se pehle fresh JWT (expired token = 401/403)
-      var up = function () {
-        return fetch(BE.url + '/rest/v1/portal_config?on_conflict=id', {
-          method: 'POST',
-          headers: H({ 'Prefer': 'resolution=merge-duplicates,return=representation' }),
-          body: JSON.stringify({ id: 1, data: data })
-        });
-      };
-      r = await up();
-      if (r.status === 408 || r.status === 429 || r.status >= 500) {   // timeout / rate-limit / server blip -> ek retry
-        await new Promise(function (z) { setTimeout(z, 700); });
-        await suRefresh();
-        r = await up();
+      var w = await supaFetch('/rest/v1/rpc/sp_whoami', { method: 'POST', headers: H(null, true), body: '{}' });
+      if (!w.ok) {
+        if (/PGRST202|Could not find the function/i.test(w.txt || '')) return { ok: true, missing: true, session: SP.session() };
+        throw err('whoami fail (' + w.status + '): ' + String(w.txt || '').slice(0, 160), w.status);
       }
-      j = await jread(r);
-      if (!r.ok) throw err(pubErr(r.status, j), r.status);
-      var row = Array.isArray(j) ? j[0] : j;
-      if (!row) throw err('Supabase ne saved row wapas nahi bheji — dobara Save & Publish kariye.', 502);
-      BE.updatedAt = row.updated_at; BE.hasRow = true;
-      return { ok: true, config: row.data, savedAt: row.updated_at };
+      return { ok: true, who: Array.isArray(w.j) ? w.j[0] : w.j, session: SP.session() };
     }
 
+    if (path === '/api/admin/config' && method === 'PUT') {
+      var data = body && body.config ? body.config : body;
+      await requireAdminSession();
+      var whoCol = !!BE.email && !BE.noWhoCol;
+      var res = null;
+      for (var attempt = 0; attempt < 4; attempt++) {
+        if (!(await ensureAuth())) throw sessionError();
+        var row = { id: 1, data: data };
+        if (whoCol) row.updated_by = String(BE.email).slice(0, 120);
+        res = await supaFetch('/rest/v1/portal_config?on_conflict=id', {
+          method: 'POST',
+          headers: H({ 'Prefer': 'resolution=merge-duplicates,return=representation' }, true),
+          body: JSON.stringify(row)
+        });
+        if (res.ok) break;
+        if (res.status === 400 && whoCol && /updated_by/i.test(res.txt || '')) { whoCol = false; BE.noWhoCol = true; continue; }
+        if (res.status === 401 || res.status === 403) {
+          if (!(await suRefresh(true))) {
+            if (res.status === 401) throw sessionError();
+            break;
+          }
+          /* Recheck metadata after a refresh so role revocation takes effect. */
+          try { await requireAdminSession(); } catch (e) { if (e.code === 403) throw e; }
+          continue;
+        }
+        if (res.status === 408 || res.status === 429 || res.status >= 500) {
+          await sleep(700); await suRefresh(true); continue;
+        }
+        break;
+      }
+      if (!res || !res.ok) {
+        var we = err(pubErr(res ? res.status : 500, res && res.j, res && res.txt), res ? res.status : 500);
+        we.noRetry = true; we.needLogin = !haveSession(); if (res && res.status === 403) we.fixSql = FIX_SQL;
+        throw we;
+      }
+      j = res.j;
+      var saved = Array.isArray(j) ? j[0] : j;
+      if (!saved) throw err('Supabase ne saved row wapas nahi bheji — ' + FIX_SQL + ' RUN karke dobara Save kariye.', 406);
+      BE.updatedAt = saved.updated_at; BE.hasRow = true;
+      return { ok: true, config: saved.data, savedAt: saved.updated_at, savedBy: saved.updated_by || BE.email };
+    }
+
+    /* Stats and reset are privileged too. An authenticated-but-non-admin user
+       must not be able to read usage data or erase it through the RPC. */
     if (path === '/api/admin/stats' && (method === undefined || method === 'GET')) {
-      r = await fetch(BE.url + '/rest/v1/portal_hits?select=key,hits,last_at&order=hits.desc&limit=800', { headers: H() });
-      if (!r.ok) throw err('Stats padhne se mana kiya (' + r.status + ') — authenticated policy chahiye.', r.status);
-      var rows = await jread(r) || []; var map = {};
+      await requireAdminSession();
+      var sr = await supaFetch('/rest/v1/portal_hits?select=key,hits,last_at&order=hits.desc&limit=800', { headers: H(null, true) });
+      if (!sr.ok) throw err('Stats padhne se mana kiya (' + sr.status + ') — ' + FIX_SQL + ' me admin policy check kariye.', sr.status);
+      var rows = sr.j || []; var map = {};
       rows.forEach(function (x) { map[x.key] = +x.hits || 0; });
       return { ok: true, stats: map, rows: rows };
     }
     if (path === '/api/admin/stats' && method === 'POST') {
-      r = await fetch(BE.url + '/rest/v1/rpc/reset_hits', { method: 'POST', headers: H(), body: '{}' });
-      if (!r.ok) throw err('Counters reset nahi hue (' + r.status + ') — reset_hits sirf logged-in admin ke liye hai.', r.status);
+      await requireAdminSession();
+      var rr = await supaFetch('/rest/v1/rpc/reset_hits', { method: 'POST', headers: H(null, true), body: '{}' });
+      if (!rr.ok) throw err('Counters reset nahi hue: ' + pubErr(rr.status, rr.j, rr.txt), rr.status);
       return { ok: true };
     }
 
     if (path === '/api/admin/change-password') {
-      r = await fetch(BE.url + '/auth/v1/user', { method: 'PUT', headers: H(), body: JSON.stringify({ password: String((body && body.next) || '') }) });
-      if (!r.ok) { var ej2 = await jread(r); throw err((ej2 && (ej2.msg || ej2.error_description)) || ('Password change fail (' + r.status + '). Supabase Dashboard → Authentication → Users se bhi badal sakta hai.'), r.status); }
+      await requireAdminSession();
+      var pr = await supaFetch('/auth/v1/user', { method: 'PUT', headers: H(null, true), body: JSON.stringify({ password: String((body && body.next) || '') }) });
+      if (!pr.ok) throw err((pr.j && (pr.j.msg || pr.j.error_description)) || ('Password change fail (' + pr.status + '). Supabase Dashboard se bhi badal sakta hai.'), pr.status);
       return { ok: true, supabase: true };
     }
 
     if (path === '/api/admin/export') {
+      await requireAdminSession();
       var c = await supaApi('/api/config', 'GET');
-      var st = await supaApi('/api/admin/stats', 'GET').catch(function () { return { stats: {} }; });
+      var st = await supaApi('/api/admin/stats', 'GET');
       return { ok: true, config: c.config, stats: st.stats, updatedAt: c.updatedAt };
     }
 
@@ -217,7 +371,7 @@
 
   function serverApi(path, method, body) {
     var t = null; try { t = localStorage.getItem('sp_token_v1'); } catch (e) {}
-    return fetch(String(path).replace(/^\/+/, ''), {   // relative -> sub-folder hosting me bhi chalega
+    return fetch(String(path).replace(/^\/+/, ''), {
       method: method || 'GET',
       headers: { 'Content-Type': 'application/json', 'x-auth-token': t || '' },
       body: body ? JSON.stringify(body) : undefined
@@ -232,29 +386,26 @@
   /* mode:'auto' -> pehle cloud check; cloud na mile to Node API; wo bhi nahi to local */
   BE.probe = null;
   async function resolveAuto() {
-    // 1) Apna Node server jawab de raha hai? -> 'server' (local dev/preview wahi rahe)
     try {
       var rs = await fetch('api/config', { cache: 'no-store' });
       if (rs.ok) { var j = await rs.json(); if (j && j.config) { BE.mode = 'server'; BE.probe = j; return; } }
     } catch (e2) {}
-    // 2) Supabase set hai? -> 'supabase' (global). Table na ho to bhi cloud hi choose hoga,
-    //    taaki banner sahi salah de sake.
     if (BE.url && BE.key) {
       try {
         var r = await supaApi('/api/config', 'GET');
         if (r && (r.config || r.noRow)) { BE.mode = 'supabase'; BE.probe = r; return; }
       } catch (e) { BE.probeErr = e.message || String(e); }
     }
-    // 3) Kuch nahi -> local mode (browser storage)
     BE.mode = 'local';
   }
 
-  /* ek hi entry point — 401 aane par token refresh karke ek baar retry */
+  /* 401 means refresh/retry once; 403 is an authorization decision and must
+     not be retried with the anon key or hidden behind a second request. */
   SP.api = function (path, method, body) {
     if (BE.mode !== 'supabase') return serverApi(path, method, body);
     return supaApi(path, method, body).catch(async function (e) {
-      if (e && e.code === 401 && path !== '/api/admin/login') {
-        if (await suRefresh()) return supaApi(path, method, body);
+      if (e && e.code === 401 && !e.noRetry && path !== '/api/admin/login' && path !== '/api/admin/whoami') {
+        if (await suRefresh(true)) return supaApi(path, method, body);
       }
       throw e;
     });
@@ -289,12 +440,22 @@
   SP.toast = toast;
 
   /* ---------------------------------------------------------- open link */
-  function hrefOf(url) { return /^https?:\/\//i.test(url) ? url : (url || '#'); }
+  /* Config database se aata hai, isliye display se pehle protocol allowlist
+     lagti hai. javascript:, data:, vbscript: aur protocol-relative URLs ko
+     kabhi iframe/href me nahi daalte — even if a stale/malicious row bypassed
+     the admin form. */
+  function safeUrl(raw) {
+    var u = String(raw == null ? '' : raw).trim();
+    if (!u || /^\/\//.test(u) || /^(?:javascript|data|vbscript):/i.test(u)) return '';
+    return /^(?:https?:\/\/|mailto:|tel:|\/|#)/i.test(u) ? u : '';
+  }
+  function hrefOf(url) { return safeUrl(url) || '#'; }
   function openLink(link) {
-    if (!link.url || !link.live) { toast('“' + link.label + '” abhi LIVE nahi hai — admin ko URL set karne dijiye.', 'eyeoff'); return false; }
+    var url = safeUrl(link && link.url);
+    if (!url || !link.live) { toast('“' + link.label + '” abhi LIVE nahi hai — safe URL set karne dijiye.', 'eyeoff'); return false; }
     hit(link.id);
-    if (link.openIn === 'embed') { openEmbed(link.url, link.label); return false; }
-    if (link.openIn === 'same') { location.href = hrefOf(link.url); return false; }
+    if (link.openIn === 'embed') { openEmbed(url, link.label); return false; }
+    if (link.openIn === 'same') { location.href = url; return false; }
     return true; // normal <a target=_blank>
   }
   function hit(id) {
@@ -311,10 +472,12 @@
   }
   SP.openEmbed = openEmbed;
   function openEmbed(url, title) {
+    var safe = safeUrl(url);
+    if (!safe) { toast('Is link ka URL browser security ke liye allow nahi hai.', 'alert'); return; }
     var v = document.getElementById('veil-embed');
     document.getElementById('emb-title').textContent = title || 'Link';
-    document.getElementById('emb-hint').innerHTML = '<a href="' + esc(hrefOf(url)) + '" target="_blank" rel="noopener">New tab me kholein ↗</a>';
-    document.getElementById('emb-frame').src = url;
+    document.getElementById('emb-hint').innerHTML = '<a href="' + esc(safe) + '" target="_blank" rel="noopener">New tab me kholein ↗</a>';
+    document.getElementById('emb-frame').src = safe;
     showVeil(v);
   }
 
@@ -501,7 +664,7 @@
       bn.innerHTML = show
         ? (SP.offlineView
             ? ICON('alert') + ' <span>Supabase abhi reachable nahi — <b>pichhli saved copy</b> dikha raha hoon. (Internet/URL check kariye.)</span>'
-            : ICON('upload') + ' <span>Cloud se connect ho gaya, par <b>portal_config</b> me abhi koi config nahi' + (SP.missingTable ? ' (table nahi mila — supabase-setup.sql chalaiye)' : '') + '.</span><button class="btn sm pri" id="bn-pub">Abhi publish kariye</button>')
+            : ICON('upload') + ' <span>Cloud se connect ho gaya, par <b>portal_config</b> me abhi koi config nahi' + (SP.missingTable ? ' (table nahi mila — supabase-all.sql chalaiye)' : '') + '.</span><button class="btn sm pri" id="bn-pub">Abhi publish kariye</button>')
         : '';
       var pb = document.getElementById('bn-pub');
       if (pb) pb.addEventListener('click', function () { SP.openAdmin(); setTimeout(function () { if (window.SPAdmin) SPAdmin.gotoCloud(); }, 300); });
@@ -551,12 +714,14 @@
         if (!v) { toast('Pehle Employee ID ya naam likhiye.', 'user-search'); return; }
         if (!tpl) { toast('Employee search ka URL admin panel me set nahi kiya gaya.', 'eyeoff'); return; }
         var url = tpl.replace(/\{q\}/g, encodeURIComponent(v)).replace(/\{Q\}/g, encodeURIComponent(v.toUpperCase())).replace(/\{u\}/g, v);
+        var safe = safeUrl(url);
+        if (!safe) { toast('Employee search URL unsafe hai — admin se https URL set karaiye.', 'alert'); return; }
         hit('search-' + sec.id);
         var res = box.querySelector('[data-res]');
-        if (/^#/.test(url) || url.indexOf('mailto:') === 0 || url.indexOf('tel:') === 0) { openEmbed(url, 'Employee search'); return; }
-        var w2 = window.open(url, '_blank', 'noopener');
+        if (/^#/.test(safe) || safe.indexOf('mailto:') === 0 || safe.indexOf('tel:') === 0) { openEmbed(safe, 'Employee search'); return; }
+        var w2 = window.open(safe, '_blank', 'noopener');
         if (res) res.innerHTML = '<span class="tag live">Opened</span> “' + esc(v) + '” ke liye naya tab khula hai. ' +
-          '<a href="' + esc(url) + '" target="_blank" rel="noopener">Dobara kholein ↗</a>';
+          '<a href="' + esc(safe) + '" target="_blank" rel="noopener">Dobara kholein ↗</a>';
         if (!w2) toast('Browser ne popup block kar diya — link naye tab me kholein.', 'alert');
       };
       btn.addEventListener('click', run);
@@ -621,6 +786,21 @@
     }, BE.poll * 1000);
   }
 
+  /* Panel khula rehne par expired JWT se Save ko anon request mat banne do. */
+  function startAuthKeepAlive() {
+    if (typeof setInterval !== 'function') return;
+    setInterval(function () {
+      if (BE.mode !== 'supabase' || !BE.refresh || !BE.token || document.hidden) return;
+      if (!BE.exp) { var cl = jwtOf(BE.token); if (cl && cl.exp) BE.exp = cl.exp * 1000; }
+      if (BE.exp && BE.exp < Date.now() + 10 * 60 * 1000) suRefresh(true);
+    }, 4 * 60 * 1000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      if (BE.mode === 'supabase' && BE.refresh && BE.token && BE.exp && BE.exp < Date.now() + 60000) suRefresh(true);
+    });
+  }
+  SP.keepAuthAlive = startAuthKeepAlive;
+
   async function boot() {
     document.getElementById('ic-search').innerHTML = ICON('search');
     document.getElementById('ic-lock').innerHTML = ICON('lock');
@@ -656,16 +836,27 @@
     wireTopSearch();
     wireSupport();
     startPolling();
+    startAuthKeepAlive();
+    if (SP.isSupa() && BE.refresh && BE.token && (!BE.exp || BE.exp < Date.now() + 5 * 60000)) suRefresh(true);
     document.getElementById('btn-admin').addEventListener('click', openAdmin);
-    window.addEventListener('storage', function (ev) { // dusre tab me save kiya ho to refresh
+    window.addEventListener('storage', function (ev) { // dusre tab me save/login kiya ho to sync
       if (ev.key === LS_CFG && SP.server !== false) { try { SP.config = JSON.parse(ev.newValue); render(); toast('Portal refresh ho gaya (dusre tab se).', 'check'); } catch (e) {} }
+      if (ev.key === 'sp_su_at' || ev.key === 'sp_su_rt' || ev.key === 'sp_su_exp' || ev.key === 'sp_su_email') {
+        try {
+          var at = localStorage.getItem('sp_su_at'), rt = localStorage.getItem('sp_su_rt');
+          if (at && at !== BE.token) {
+            BE.token = at; BE.refresh = rt || null; BE.exp = +localStorage.getItem('sp_su_exp') || 0;
+            BE.email = localStorage.getItem('sp_su_email') || null; BE.isAdmin = false;
+          } else if (!at) { suClear(); }
+        } catch (e) {}
+      }
     });
     if (SP.needsPublish) toast('Cloud se connect ho gaya, par portal_config khali hai — banner ke button se Admin → Cloud → Publish kariye.', 'upload');
     else if (SP.offlineView) toast('Cloud/server dono reachable nahi — pichhli saved copy dikha raha hoon.', 'alert');
   }
   SP.boot = boot;
 
-  document.addEventListener('DOMContentLoaded', boot);  document.addEventListener('DOMContentLoaded', boot);
+  document.addEventListener('DOMContentLoaded', boot);
 
   function openAdmin() { if (window.SPAdmin) window.SPAdmin.open(); else toast('Admin script load nahi hua.', 'alert'); }
   SP.openAdmin = openAdmin;

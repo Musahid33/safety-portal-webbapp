@@ -15,7 +15,13 @@
 
   function init() {
     esc = SP.esc; toast = SP.toast;
-    token = localStorage.getItem(SP.LS.tok) || null;
+    /* Supabase access/refresh tokens live only in the auth layer. Keep at most
+       an in-memory marker here; never duplicate a bearer token in sp_token_v1. */
+    if (SP.isSupa && SP.isSupa()) {
+      token = SP.session && SP.session().loggedIn ? 'supabase' : null;
+    } else {
+      try { token = localStorage.getItem(SP.LS.tok) || null; } catch (e) { token = null; }
+    }
   }
 
   /* ---------------------------------------------------------- api (backend-agnostic) */
@@ -89,7 +95,7 @@
       '<button class="x" data-act="close">' + ICON('x') + '</button></div>' +
       '<div class="sheet-bd login">' +
       '<div class="fld"><label>' + (su ? 'Username / Email' : 'Username') + '</label><input type="' + (su ? 'email' : 'text') + '" id="' + (su ? 'adm-email' : 'adm-user') + '" autocomplete="username" placeholder="Username" value="' + (su ? esc((SP.BE && SP.BE.email) || '') : '') + '" /></div>' +
-      '<div class="fld"><label>' + (local && !localStorage.getItem('sp_pw_local') ? 'Naya password banaiye (6+)' : 'Password') + '</label><input type="password" id="adm-pw" autocomplete="current-password" placeholder="••••••••" /></div>' +
+      '<div class="fld"><label>' + (local && !localStorage.getItem('sp_pw_local') ? 'Naya password banaiye (12+)' : 'Password') + '</label><input type="password" id="adm-pw" autocomplete="current-password" placeholder="••••••••" /></div>' +
       '<p class="err" id="adm-err"></p>' +
       '<div class="acts" style="margin-top:16px"><button class="btn pri blk" data-act="login">' + ICON('lock') + ' Login</button></div>' +
       '</div></div>';
@@ -105,15 +111,19 @@
     if (!SP.server) { // local mode: pehli baar password set
       var saved = localStorage.getItem('sp_pw_local');
       if (!saved) {
-        if (pw.length < 6) { err.textContent = 'Kam se kam 6 character.'; err.classList.add('show'); return; }
+        if (pw.length < 12) { err.textContent = 'Kam se kam 12 character.'; err.classList.add('show'); return; }
         localStorage.setItem('sp_pw_local', pw); toast('Local admin password set ho gaya.', 'check');
       } else if (saved !== pw) { err.textContent = 'Password galat hai.'; err.classList.add('show'); return; }
       token = 'local'; localStorage.setItem(SP.LS.tok, token);
       document.getElementById('veil-admin').innerHTML = panelHTML(); renderTab(); return;
     }
     api('/api/admin/login', 'POST', { password: pw, email: em ? em.value.trim() : '' }).then(function (r) {
-      token = r.token || 'supabase'; mustChange = !!r.mustChange;
-      localStorage.setItem(SP.LS.tok, token);
+      token = SP.isSupa && SP.isSupa() ? 'supabase' : (r.token || 'server');
+      mustChange = !!r.mustChange;
+      try {
+        if (SP.isSupa && SP.isSupa()) localStorage.removeItem(SP.LS.tok);
+        else localStorage.setItem(SP.LS.tok, token);
+      } catch (e) {}
       document.getElementById('veil-admin').innerHTML = panelHTML();
       renderTab();
       if (mustChange) toast('Zyada zaroori: Security tab jakar default password badaliye.', 'lock');
@@ -432,8 +442,8 @@
       '<button class="btn gho sm" data-act="copy-fix">' + ICON('download') + ' supabase-rls-fix.sql copy</button>' +
       '</div>' +
       '<div id="sess-box" style="margin-top:10px"></div>' +
-      '<p class="tip" style="margin-top:8px">portal_config par write policy <span class="mono">to authenticated</span> hai — matlab <b>koi bhi logged-in Supabase user</b> likh sakta hai (koi extra “admin role” nahi chahiye). ' +
-      'Isliye “RLS ne roka” error ka matlab 99% baar <b>session nahi / expire ho gaya</b> hota hai: pehle <i>Session check</i>, phir login, tabhi Save kariye.</p></div>' +
+      '<p class="tip" style="margin-top:8px">portal_config par write policy <span class="mono">app_metadata.role = admin</span> hai — authenticated user hone ke saath admin claim bhi zaroori hai. ' +
+      'Stats, password, storage deploy aur config sab isi admin check se protected hain. Session expire ho to pehle <i>Login / re-login</i> kariye; policy error ke liye fix SQL chalaiye.</p></div>' +
       '<div class="acard" style="margin-top:16px"><div class="t" style="font-size:13.5px">Supabase setup — 4 step</div><ol class="tip" style="margin:8px 0 0 18px;line-height:1.9">' +
       '<li><b>SQL:</b> Supabase Dashboard → SQL Editor → New query → <span class="mono">supabase-all.sql</span> ka poora content paste karke RUN (table + RLS + click counter + 7-section seed).</li>' +
       '<li><b>User:</b> Authentication → Users → <i>Add user</i> (email + password) — aur <i>Providers → Email</i> me <b>Confirm email OFF</b> rakhiye (warna login pehle verify maangega).</li>' +
@@ -487,24 +497,24 @@
         '<div class="acard" style="margin-bottom:12px"><div class="m">Logged in as</div><div class="t" style="font-size:15px">' + esc(be.email || '(email nahi mila — dobara login kariye)') + '</div>' +
         '<div class="m" style="margin-top:4px">Project: <span class="mono">' + esc(be.url || '—') + '</span></div></div>' +
         '<div class="grid2">' +
-        fld('Naya password', '<input type="password" id="pw-new" autocomplete="new-password" placeholder="kam se kam 6 character" />') +
+        fld('Naya password', '<input type="password" id="pw-new" autocomplete="new-password" placeholder="kam se kam 12 character" />') +
         fld('Naya password dobara', '<input type="password" id="pw-new2" autocomplete="new-password" />') +
         '</div>' +
         '<div class="acts" style="margin-top:14px"><button class="btn pri" data-act="pw-change">' + ICON('lock') + ' Password badlein</button><span class="tip" id="pw-msg"></span></div>' +
         '<div class="hint" style="margin-top:16px">Note: <b>Current password ki zarurat nahi</b> — Supabase logged-in session se hi update hota hai. Admin banane ke liye Supabase Dashboard → Authentication → Users me App Metadata <span class="mono">{"role":"admin"}</span> set kariye, phir sign out/in kariye. RLS sirf authenticated admin ko likhne deti hai.</div>';
     }
-    return '<div class="hint">Admin panel ka password. Isko default (<span class="mono">admin@123</span>) se zaroor badal dijiye — panel se poora portal control hota hai.</div>' +
+    return '<div class="hint">Admin panel ka password server ke <span class="mono">ADMIN_PASSWORD</span> environment variable se set hota hai. Shared server par known default kabhi use na karein.</div>' +
       (mustChange ? '<div class="sup-note" style="margin-bottom:12px">⚠ Aap abhi bhi default password use kar rahe hain.</div>' : '') +
       '<div class="grid3">' +
       fld('Current password', '<input type="password" id="pw-cur" autocomplete="current-password" />') +
-      fld('Naya password', '<input type="password" id="pw-new" autocomplete="new-password" placeholder="kam se kam 6 character" />') +
+      fld('Naya password', '<input type="password" id="pw-new" autocomplete="new-password" placeholder="kam se kam 12 character" />') +
       fld('Naya password dobara', '<input type="password" id="pw-new2" autocomplete="new-password" />') +
       '</div>' +
       '<div class="acts" style="margin-top:14px"><button class="btn pri" data-act="pw-change">' + ICON('lock') + ' Password badlein</button>' +
       '<span class="tip" id="pw-msg"></span></div>' +
       '<div class="acard" style="margin-top:16px"><div class="t" style="font-size:13.5px">Server side settings (optional)</div>' +
-      '<p class="tip" style="margin-top:6px">Password server par <span class="mono">data/config.json</span> me hash hoke save hota hai — plain text me kahin nahi. ' +
-      'Reset karne ke liye: server band kariye, fir <span class="mono">ADMIN_PASSWORD=NayaPass node server.js</span> chalayein.</p></div>';
+      '<p class="tip" style="margin-top:6px">Password server par <span class="mono">data/config.json</span> me scrypt hash hoke save hota hai — plain text me kahin nahi. ' +
+      'Pehli baar set/reset karne ke liye server band kariye, fir <span class="mono">ADMIN_PASSWORD=long-password node dev/server.js</span> chalayein.</p></div>';
   }
 
   /* ---------------------------------------------------------- backup pane */
@@ -746,7 +756,7 @@
     var cur = curEl ? curEl.value : '', n1 = document.getElementById('pw-new').value, n2 = document.getElementById('pw-new2').value;
     msg.textContent = '';
     if (n1 !== n2) { msg.textContent = 'Naya password dono jagah same nahi hai.'; return; }
-    if (n1.length < 6) { msg.textContent = 'Kam se kam 6 character.'; return; }
+    if (n1.length < 12) { msg.textContent = 'Kam se kam 12 character.'; return; }
     if (!SP.server) { localStorage.setItem('sp_pw_local', n1); mustChange = false; msg.textContent = 'Local password badal gaya ✓'; toast('Password update.', 'check'); return; }
     btn.disabled = true;
     api('/api/admin/change-password', 'POST', { current: cur, next: n1 }).then(function () {
@@ -811,21 +821,45 @@
   });
 
   var RLS_FIX_SQL = [
-    '-- Supabase → SQL Editor me paste karke RUN kariye (poora safe hai, dobara chalane se kuch bigadta nahi)',
+    '-- Supabase → SQL Editor me paste karke RUN kariye (admin-only repair)',
+    'create or replace function public.is_portal_admin() returns boolean',
+    'language sql stable security definer set search_path = public as $$',
+    "  select coalesce((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin', false)",
+    '$$;',
+    'revoke execute on function public.is_portal_admin() from public;',
+    'grant execute on function public.is_portal_admin() to authenticated;',
     'grant usage on schema public to anon, authenticated;',
     'grant select on table public.portal_config to anon;',
     'grant select, insert, update on table public.portal_config to authenticated;',
-    'alter table public.portal_config add column if not exists updated_by text;',
+    'grant select on table public.portal_hits to authenticated;',
     'alter table public.portal_config enable row level security;',
-    'drop policy if exists "portal_config_read_all"   on public.portal_config;',
+    'alter table public.portal_hits enable row level security;',
     'drop policy if exists "portal_config_write_admin" on public.portal_config;',
     'drop policy if exists "portal_config_insert_admin" on public.portal_config;',
-    'drop policy if exists "portal_config_write_one"   on public.portal_config;',
-    'create policy "portal_config_read_all" on public.portal_config for select to anon, authenticated using (true);',
     'create policy "portal_config_write_admin" on public.portal_config',
-    "  for update to authenticated using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');",
+    '  for update to authenticated using (public.is_portal_admin()) with check (public.is_portal_admin());',
     'create policy "portal_config_insert_admin" on public.portal_config',
-    "  for insert to authenticated with check (auth.role() = 'authenticated');",
+    '  for insert to authenticated with check (public.is_portal_admin());',
+    'drop policy if exists "portal_hits_read_admin" on public.portal_hits;',
+    'create policy "portal_hits_read_admin" on public.portal_hits',
+    '  for select to authenticated using (public.is_portal_admin());',
+    'create or replace function public.reset_hits() returns void',
+    'language plpgsql security definer set search_path = public as $$',
+    'begin',
+    "  if not public.is_portal_admin() then raise exception 'portal admin required' using errcode = '42501'; end if;",
+    '  delete from public.portal_hits;',
+    'end $$;',
+    'revoke execute on function public.reset_hits() from public, anon;',
+    'grant execute on function public.reset_hits() to authenticated;',
+    'drop policy if exists "portal_deploy_insert" on storage.objects;',
+    'drop policy if exists "portal_deploy_update" on storage.objects;',
+    'drop policy if exists "portal_deploy_delete" on storage.objects;',
+    'create policy "portal_deploy_insert" on storage.objects for insert to authenticated',
+    "  with check (bucket_id = 'portal' and public.is_portal_admin());",
+    'create policy "portal_deploy_update" on storage.objects for update to authenticated',
+    "  using (bucket_id = 'portal' and public.is_portal_admin()) with check (bucket_id = 'portal' and public.is_portal_admin());",
+    'create policy "portal_deploy_delete" on storage.objects for delete to authenticated',
+    "  using (bucket_id = 'portal' and public.is_portal_admin());",
   ].join('\n');
 
   async function sessionCheck() {
@@ -850,18 +884,20 @@
       var isAuth = String(who.jwt_role) === 'authenticated';
       row('DB role', isAuth ? 'ok' : 'off', 'PostgREST is request ko "' + esc(String(who.jwt_role)) + '" role de raha hai' +
         (isAuth ? (who.uid ? ' · uid ' + esc(String(who.uid)) : '') : ' — authenticated chahiye (login kariye)'), !isAuth);
+      var isAdmin = who.is_admin === true || who.admin === true;
+      row('Admin claim', isAdmin ? 'ok' : 'off', isAdmin ? 'app_metadata.role = admin' : 'Supabase user ke App Metadata me {"role":"admin"} set kijiye, phir sign out/in kariye', !isAdmin);
       if (who.email) row('Supabase user', who.email_confirmed === false ? 'off' : 'ok', esc(String(who.email)) +
         (who.email_confirmed === false ? ' — email confirm nahi (Providers → Email → Confirm email OFF kariye)' : ''), who.email_confirmed === false);
       var pols = who.policies || [];
       var upd = pols.filter(function (p) { return p.cmd === 'update' || p.cmd === 'all'; });
       var okPol = upd.some(function (p) { var rl = p.roles || []; return !rl.length || rl.indexOf('authenticated') >= 0; });
-      row('Update policy', okPol ? 'ok' : 'off', okPol ? ('authenticated ke liye: ' + upd.map(function (p) { return p.name; }).join(', '))
+      row('Update policy', okPol ? 'ok' : 'off', okPol ? ('authenticated + admin check: ' + upd.map(function (p) { return p.name; }).join(', '))
         : (upd.length ? 'policy hai par authenticated role me nahi: ' + upd.map(function (p) { return p.name + ' [' + (p.roles || []).join(',') + ']'; }).join(' · ')
           : 'koi update policy nahi mili — supabase-rls-fix.sql RUN kariye'), !okPol);
       var ins = pols.filter(function (p) { return p.cmd === 'insert' || p.cmd === 'all'; });
       if (!ins.length) row('Insert policy', 'off', 'upsert ko insert policy bhi chahiye — supabase-rls-fix.sql RUN kariye', true);
       var g = who.grants || {};
-      var okG = g.auth_insert !== false && g.auth_update !== false;
+      var okG = g.insert !== false && g.update !== false;
       row('GRANT (authenticated)', okG ? 'ok' : (who.grants_missing ? 'note' : 'off'),
         'insert: ' + (g.insert === undefined ? '?' : (g.insert ? 'yes' : 'NO')) + ' · update: ' + (g.update === undefined ? '?' : (g.update ? 'yes' : 'NO')) +
         (okG ? '' : ' — table par grant nahi (RLS se pehle ye aata hai)'), !okG);
