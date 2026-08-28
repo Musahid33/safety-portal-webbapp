@@ -80,10 +80,67 @@
   var FIX_SQL = 'supabase-rls-fix.sql';
   var NO_SESSION_MSG = 'Aap is browser me logged-in nahi ho (ya session expire ho gaya), isliye Supabase ne write rok diya. ' +
     'Policy me badlav ki zarurat nahi — bas Admin → Login dobara kariye (draft safe hai).';
+  var UUID_MSG = 'Ye Supabase ka User ID (UUID) hai — isse password login nahi hota. ' +
+    'Authentication → Users me jo Email column dikhta hai wahi daaliye (UUID nahi).';
+
+  var RX_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  var RX_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  /* Login identifier ko pehchano: GoTrue password grant sirf email ya phone
+     leta hai. UUID/User ID bhejne par generic "Invalid login credentials"
+     milta hai, isliye use yahin rok kar saaf message dete hain. */
+  function loginIdentity(raw) {
+    var v = String(raw == null ? '' : raw).trim();
+    if (!v) return { kind: 'empty', raw: v };
+    if (RX_UUID.test(v)) return { kind: 'uuid', raw: v };
+    if (v.indexOf('@') >= 0) {
+      return RX_EMAIL.test(v) ? { kind: 'email', email: v.toLowerCase(), raw: v }
+        : { kind: 'bad-email', raw: v };
+    }
+    /* phone: +91 98765 43210 / 098765-43210 / 9876543210 */
+    if (/^\+?[0-9][0-9\s\-().]{5,20}$/.test(v)) {
+      var d = v.replace(/[^0-9]/g, '');
+      if (v.charAt(0) === '+') return { kind: 'phone', phone: '+' + d, raw: v };
+      if (d.length > 10 && d.charAt(0) === '0') d = d.replace(/^0+/, '');
+      var cc = String((window.SP_BACKEND && window.SP_BACKEND.phoneCountryCode) || '91').replace(/[^0-9]/g, '');
+      return { kind: 'phone', phone: '+' + (d.length <= 10 ? cc + d : d), raw: v };
+    }
+    return { kind: 'unknown', raw: v };
+  }
+  SP.loginIdentity = loginIdentity;
 
   function err(m, code) { var e = new Error(m); e.code = code; return e; }
   function authErr(m) { var e = err(m, 401); e.needLogin = true; return e; }
   function sleep(ms) { return new Promise(function (z) { setTimeout(z, ms); }); }
+
+  /* =======================================================================
+     NETWORK TIMEOUTS
+     A slow or unreachable Supabase must fail fast with a readable error. Without
+     a deadline `fetch` can hang for the browser's default (often 90s+), which
+     used to freeze boot and leave the Admin button dead on click.
+     ======================================================================= */
+  var NET = { probe: 6000, auth: 15000, data: 20000 };
+  function timeoutErr(ms) {
+    var e = err('Supabase ' + Math.round(ms / 1000) + ' second me jawab nahi de raha (slow ya offline). ' +
+      'Internet/Supabase status check karke dobara koshish kariye.', 0);
+    e.timeout = true; e.offline = true; return e;
+  }
+  function fetchT(url, opts, ms) {
+    var limit = ms || NET.data;
+    if (typeof AbortController !== 'function') return fetch(url, opts);
+    var ac = new AbortController();
+    var o = {}; var src = opts || {};
+    for (var k in src) { if (Object.prototype.hasOwnProperty.call(src, k)) o[k] = src[k]; }
+    o.signal = ac.signal;
+    var timer = setTimeout(function () { try { ac.abort(); } catch (e) {} }, limit);
+    return fetch(url, o).then(function (r) {
+      clearTimeout(timer); return r;
+    }, function (e) {
+      clearTimeout(timer);
+      if (e && (e.name === 'AbortError' || /abort/i.test(String(e && e.message || '')))) throw timeoutErr(limit);
+      throw e;
+    });
+  }
 
   /* JWT ke claims sirf expiry/diagnostics ke liye padhe jaate hain. Authorization
      ka bharosa Supabase /auth/v1/user aur Postgres RLS par hi hai. */
@@ -137,10 +194,10 @@
     var refreshToken = BE.refresh;
     _refreshing = (async function () {
       try {
-        var r = await fetch(BE.url + '/auth/v1/token?grant_type=refresh_token', {
+        var r = await fetchT(BE.url + '/auth/v1/token?grant_type=refresh_token', {
           method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
           body: JSON.stringify({ refresh_token: refreshToken })
-        });
+        }, NET.auth);
         if (!r.ok) {
           /* A rejected refresh token is definitive; a network failure is not. */
           if (r.status === 400 || r.status === 401 || r.status === 403) suClear();
@@ -167,8 +224,8 @@
     return extra ? Object.assign(h, extra) : h;
   }
   async function jread(r) { try { return await r.json(); } catch (e) { return null; } }
-  async function supaFetch(path, opts) {
-    var r = await fetch(BE.url + path, opts);
+  async function supaFetch(path, opts, ms) {
+    var r = await fetchT(BE.url + path, opts, ms);
     var txt = await r.text().catch(function () { return ''; });
     var j = null; try { j = txt ? JSON.parse(txt) : null; } catch (e) {}
     return { r: r, status: r.status, ok: r.ok, j: j, txt: txt };
@@ -231,7 +288,7 @@
     if (path === '/api/health') return { ok: true, backend: 'supabase', url: BE.url };
 
     if (path === '/api/config' && (method === undefined || method === 'GET')) {
-      r = await fetch(BE.url + '/rest/v1/portal_config?select=data,updated_at&id=eq.1', { headers: H({ 'Accept': 'application/vnd.pgrst.object+json' }) });
+      r = await fetchT(BE.url + '/rest/v1/portal_config?select=data,updated_at&id=eq.1', { headers: H({ 'Accept': 'application/vnd.pgrst.object+json' }) }, BE.probing ? NET.probe : NET.data);
       if (r.status === 406 || r.status === 404) {
         BE.hasRow = false;
         var tNo = r.status === 404 ? await r.text().catch(function () { return ''; }) : '';
@@ -246,21 +303,44 @@
     if (path === '/api/hit') {
       /* Hit recording is intentionally public; never attach a stored admin JWT. */
       try {
-        await fetch(BE.url + '/rest/v1/rpc/record_hit', {
+        await fetchT(BE.url + '/rest/v1/rpc/record_hit', {
           method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
           body: JSON.stringify({ p_key: String((body && body.id) || '').slice(0, 60) })
-        });
+        }, NET.data);
       } catch (e) {}
       return { ok: true };
     }
 
     if (path === '/api/admin/login') {
-      r = await fetch(BE.url + '/auth/v1/token?grant_type=password', {
+      /* Identifier ko GoTrue bhejne se pehle samajhna zaroori hai: UUID se
+         password login hota hi nahi (GoTrue sirf email/phone leta hai), aur
+         galat guess bheji to Supabase ka generic "Invalid login credentials"
+         aata hai — jisse user ghanton password reset karta rehta hai. */
+      var ident = loginIdentity(body && body.email);
+      if (ident.kind === 'uuid') throw err(UUID_MSG, 400);
+      if (ident.kind === 'empty') throw err('Login ke liye Supabase ka Authentication email (ya configured phone) daaliye.', 400);
+      if (ident.kind === 'bad-email' || ident.kind === 'unknown') {
+        throw err('"' + ident.raw.slice(0, 40) + '" na to valid email hai na phone. ' +
+          'Supabase → Authentication → Users wala Email daaliye.', 400);
+      }
+      var creds = ident.kind === 'phone' ? { phone: ident.phone } : { email: ident.email };
+      creds.password = String((body && body.password) || '');
+      r = await fetchT(BE.url + '/auth/v1/token?grant_type=password', {
         method: 'POST', headers: { 'Content-Type': 'application/json', apikey: BE.key },
-        body: JSON.stringify({ email: String((body && body.email) || '').trim(), password: String((body && body.password) || '') })
-      });
+        body: JSON.stringify(creds)
+      }, NET.auth);
       j = await jread(r);
-      if (!r.ok) throw err((j && (j.error_description || j.msg || j.error)) || ('Login fail (' + r.status + '). Supabase user ya password check kariye.'), r.status);
+      if (!r.ok) {
+        var lm = (j && (j.error_description || j.msg || j.error)) || ('Login fail (' + r.status + '). Supabase user ya password check kariye.');
+        /* Supabase har galti par ek hi generic line deta hai — user ko batao ki
+           identifier kaise pada gaya, taki wo sahi cheez try kare. */
+        if (/invalid login credentials/i.test(lm)) {
+          lm = ident.kind === 'phone'
+            ? 'Phone (' + ident.phone + ') ya password galat hai. Agar Supabase user email se bana hai to email daaliye.'
+            : 'Email (' + ident.email + ') ya password galat hai. Wahi email daaliye jo Supabase → Authentication → Users me dikhta hai (User ID/UUID nahi).';
+        }
+        throw err(lm, r.status);
+      }
       var sess = (j && j.session) || j;
       if (!sess || !sess.access_token) {
         throw authErr('Login to ho gaya, par Supabase ne admin session (JWT) nahi bheja — Supabase me Confirm email check kariye, phir dobara login kariye.');
@@ -387,14 +467,25 @@
   BE.probe = null;
   async function resolveAuto() {
     try {
-      var rs = await fetch('api/config', { cache: 'no-store' });
+      var rs = await fetchT('api/config', { cache: 'no-store' }, NET.probe);
       if (rs.ok) { var j = await rs.json(); if (j && j.config) { BE.mode = 'server'; BE.probe = j; return; } }
     } catch (e2) {}
     if (BE.url && BE.key) {
+      /* Boot ka probe chhote deadline par chalta hai — pehla paint kabhi bhi
+         cloud ke poore data timeout ka intezaar na kare. */
+      BE.probing = true;
       try {
         var r = await supaApi('/api/config', 'GET');
         if (r && (r.config || r.noRow)) { BE.mode = 'supabase'; BE.probe = r; return; }
-      } catch (e) { BE.probeErr = e.message || String(e); }
+      } catch (e) { BE.probeErr = e.message || String(e); BE.probeOffline = !!(e && (e.timeout || e.offline)); }
+      finally { BE.probing = false; }
+      /* Supabase configured hai par abhi reachable nahi (slow/timeout/offline).
+         'local' par mat giro — local mode ek alag hi password store
+         (sp_pw_local) use karta hai, to admin apne Supabase password se login
+         hi nahi kar payega aur galat "password galat" dekhega. Cloud mode me
+         raho, read-only content cache se dikhao. */
+      BE.mode = 'supabase'; BE.offline = true;
+      return;
     }
     BE.mode = 'local';
   }
@@ -801,6 +892,20 @@
   }
   SP.keepAuthAlive = startAuthKeepAlive;
 
+  /* Admin button ko boot ke network probe ka intezaar nahi karna chahiye.
+     Handler DOM ready hote hi lag jaata hai; probe chal raha ho to click
+     usko await karta hai (hang nahi hota, kyunki har fetch par timeout hai). */
+  function wireAdminButtonEarly() {
+    var b = document.getElementById('btn-admin');
+    if (!b || b.dataset.wired) return;
+    b.dataset.wired = '1';
+    b.addEventListener('click', function () {
+      if (SP.booted) return openAdmin();
+      toast('Backend check ho raha hai — ek pal…', 'refresh');
+      Promise.resolve(SP.bootPromise).catch(function () {}).then(openAdmin);
+    });
+  }
+
   async function boot() {
     document.getElementById('ic-search').innerHTML = ICON('search');
     document.getElementById('ic-lock').innerHTML = ICON('lock');
@@ -809,11 +914,17 @@
     document.getElementById('ic-x2').innerHTML = ICON('x');
     document.getElementById('ic-sup-hd').innerHTML = ICON('chat');
     document.getElementById('ic-emb').innerHTML = ICON('external');
+    wireAdminButtonEarly();
 
     if (BE.mode === 'auto') await resolveAuto();
 
     if (BE.mode === 'local') {
       await localFallback(window.SP_SEED ? 'single-file' : 'server/cloud dono nahi mile');
+    } else if (BE.offline) {
+      /* Cloud reachable nahi tha: content cache/seed se dikhao, par mode cloud
+         hi rahega taki Admin login Supabase se ho. */
+      await localFallback('Supabase abhi reachable nahi — cached copy dikha raha hoon.');
+      SP.server = true; SP.offlineView = true;
     } else {
       try {
         var res = (BE.probe && (BE.probe.config || BE.probe.noRow)) ? BE.probe : await SP.api('/api/config');
@@ -829,7 +940,12 @@
           await localFallback('config shape anokha');
         }
       } catch (e) {
-        await localFallback((SP.isSupa() ? 'Supabase se connect nahi ho paya' : 'server se connect nahi ho paya') + ': ' + (e.message || e));
+        var why = (SP.isSupa() ? 'Supabase se connect nahi ho paya' : 'server se connect nahi ho paya') + ': ' + (e.message || e);
+        await localFallback(why);
+        /* Cloud configured hai to identity cloud ki hi rahegi — sirf content
+           offline cache se aa raha hai. SP.server=true rakhne se Admin login
+           Supabase par jaata hai (local password prompt par nahi girta). */
+        if (SP.isSupa()) { SP.server = true; SP.offlineView = true; }
       }
     }
     render();
@@ -838,7 +954,8 @@
     startPolling();
     startAuthKeepAlive();
     if (SP.isSupa() && BE.refresh && BE.token && (!BE.exp || BE.exp < Date.now() + 5 * 60000)) suRefresh(true);
-    document.getElementById('btn-admin').addEventListener('click', openAdmin);
+    SP.booted = true;
+    wireAdminButtonEarly();
     window.addEventListener('storage', function (ev) { // dusre tab me save/login kiya ho to sync
       if (ev.key === LS_CFG && SP.server !== false) { try { SP.config = JSON.parse(ev.newValue); render(); toast('Portal refresh ho gaya (dusre tab se).', 'check'); } catch (e) {} }
       if (ev.key === 'sp_su_at' || ev.key === 'sp_su_rt' || ev.key === 'sp_su_exp' || ev.key === 'sp_su_email') {
@@ -856,7 +973,14 @@
   }
   SP.boot = boot;
 
-  document.addEventListener('DOMContentLoaded', boot);
+  document.addEventListener('DOMContentLoaded', function () {
+    SP.bootPromise = boot().catch(function (e) {
+      /* Boot fail ho jaye tab bhi Admin button zinda rehna chahiye. */
+      SP.booted = true;
+      try { wireAdminButtonEarly(); } catch (e2) {}
+      try { toast('Portal load me dikkat: ' + (e && e.message || e), 'alert'); } catch (e3) {}
+    });
+  });
 
   function openAdmin() { if (window.SPAdmin) window.SPAdmin.open(); else toast('Admin script load nahi hua.', 'alert'); }
   SP.openAdmin = openAdmin;

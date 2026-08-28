@@ -51,6 +51,22 @@
     if (em && !em.value && SP.BE && SP.BE.email) em.value = SP.BE.email;
   }
 
+  /* Authorization / network failure ko login screen par saaf-saaf dikhao.
+     Chup-chaap login form dikha dena hi asli bug tha: admin ko lagta tha
+     password galat hai, jabki asal me app_metadata role missing tha. */
+  function showLoginErr(e) {
+    var v = document.getElementById('veil-admin'); if (!v) return;
+    var box = v.querySelector('#adm-err'); if (!box) return;
+    var msg = (e && e.message) || String(e || 'Login nahi ho paya.');
+    if (e && e.code === 403) {
+      msg = msg + ' (Supabase → Authentication → Users → App Metadata me {"role":"admin"} set kariye, phir sign out karke dobara login.)';
+    } else if (e && (e.timeout || e.offline)) {
+      msg = msg + ' Page hard-refresh karke dobara try kariye.';
+    }
+    box.textContent = msg;
+    box.classList.add('show');
+  }
+
   /* ---------------------------------------------------------- open / close */
   function open() {
     init();
@@ -72,8 +88,17 @@
     v.addEventListener('change', onPanelInput, true);
     v.addEventListener('toggle', function (e) { var k = e.target.dataset.key; if (!k) return; if (e.target.open) OPEN.add(k); else OPEN.delete(k); }, true);
     v.addEventListener('keydown', function (e) { if (e.key === 'Enter' && e.target.id === 'adm-pw') { e.preventDefault(); doLogin(); } });
-    if (token && SP.server) api('/api/admin/me').then(function (r) { mustChange = !!r.mustChange; renderTab(); }).catch(function () { v.innerHTML = loginHTML(); });
-    else renderTab();
+    if (token && SP.server) {
+      api('/api/admin/me').then(function (r) { mustChange = !!r.mustChange; renderTab(); }).catch(function (e) {
+        /* Pehle har error chupchap login screen bana deta tha — 403 (admin
+           claim missing) aur timeout dono "wapas login par" jaise dikhte the
+           aur user ko kabhi asli wajah pata hi nahi chalti thi. */
+        if (e && e.needLogin) return;                    // api() ne login form + message laga diya
+        token = null;
+        v.innerHTML = loginHTML();
+        showLoginErr(e);
+      });
+    } else renderTab();
     document.addEventListener('keydown', hotkey);
   }
   function close() {
@@ -89,12 +114,13 @@
   /* ---------------------------------------------------------- login view */
   function loginHTML() {
     var local = !SP.server, su = SP.isSupa && SP.isSupa();
-    // Sirf username + password — baaki koi note/link/hint nahi
+    /* Supabase mode me type="email" browser ko phone number reject karwa deta
+       hai, isliye text rakhte hain aur validation khud karte hain. */
     return '<div class="sheet" style="width:min(430px,100%)"><div class="sheet-hd">' +
       '<span class="ic">' + ICON('lock') + '</span><h3>Admin login</h3>' +
       '<button class="x" data-act="close">' + ICON('x') + '</button></div>' +
       '<div class="sheet-bd login">' +
-      '<div class="fld"><label>' + (su ? 'Username / Email' : 'Username') + '</label><input type="' + (su ? 'email' : 'text') + '" id="' + (su ? 'adm-email' : 'adm-user') + '" autocomplete="username" placeholder="Username" value="' + (su ? esc((SP.BE && SP.BE.email) || '') : '') + '" /></div>' +
+      '<div class="fld"><label>' + (su ? 'Email / Phone' : 'Username') + '</label><input type="text" id="' + (su ? 'adm-email' : 'adm-user') + '" autocomplete="username" inputmode="email" placeholder="' + (su ? 'aap@example.com' : 'Username') + '" value="' + (su ? esc((SP.BE && SP.BE.email) || '') : '') + '" /></div>' +
       '<div class="fld"><label>' + (local && !localStorage.getItem('sp_pw_local') ? 'Naya password banaiye (12+)' : 'Password') + '</label><input type="password" id="adm-pw" autocomplete="current-password" placeholder="••••••••" /></div>' +
       '<p class="err" id="adm-err"></p>' +
       '<div class="acts" style="margin-top:16px"><button class="btn pri blk" data-act="login">' + ICON('lock') + ' Login</button></div>' +
@@ -107,7 +133,21 @@
     var err = document.getElementById('adm-err');
     err.classList.remove('show');
     if (!pw) { err.textContent = 'Password khali hai.'; err.classList.add('show'); return; }
-    if (SP.isSupa() && !(em && em.value.trim())) { err.textContent = 'Email daaliye (Supabase user wala).'; err.classList.add('show'); return; }
+    if (SP.isSupa()) {
+      var idv = (em && em.value.trim()) || '';
+      if (!idv) { err.textContent = 'Email daaliye (Supabase → Authentication → Users wala).'; err.classList.add('show'); return; }
+      /* UUID yahin rok do — network call bhejne ka koi fayda nahi, Supabase
+         sirf generic "Invalid login credentials" wapas karega. */
+      var idk = SP.loginIdentity ? SP.loginIdentity(idv) : null;
+      if (idk && idk.kind === 'uuid') {
+        err.textContent = 'Ye User ID (UUID) hai — isse password login nahi hota. Users list ka Email daaliye.';
+        err.classList.add('show'); return;
+      }
+      if (idk && (idk.kind === 'bad-email' || idk.kind === 'unknown')) {
+        err.textContent = 'Valid email ya phone number daaliye.';
+        err.classList.add('show'); return;
+      }
+    }
     if (!SP.server) { // local mode: pehli baar password set
       var saved = localStorage.getItem('sp_pw_local');
       if (!saved) {
@@ -128,7 +168,7 @@
       renderTab();
       if (mustChange) toast('Zyada zaroori: Security tab jakar default password badaliye.', 'lock');
       else toast('Welcome back!', 'check');
-    }).catch(function (e) { err.textContent = e.message; err.classList.add('show'); });
+    }).catch(function (e) { showLoginErr(e); });
   }
   function doLogout() {
     api('/api/admin/logout', 'POST').catch(function () {});
@@ -212,6 +252,7 @@
     }).catch(function (e) {
       if (e && e.needLogin) return;                       // login form already dikh gaya, draft safe
       saveErr = e.message || String(e);
+      if (e && e.code === 403) saveErr += ' — App Metadata {"role":"admin"} set hai? Set karke sign out/in kariye.';
       toast('Save nahi hua: ' + saveErr, 'alert');
       if (tab === 'cloud') {                        // Cloud pane me save bar nahi hota -> box wahin dikhao
         var b = document.getElementById('cloud-st');

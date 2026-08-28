@@ -310,6 +310,29 @@ const expired = async () => { const s = await fresh(); s.sp_su_exp = String(Date
   ok('Storage deploy policies do not grant anon writes', !/for (?:insert|update|delete) to anon,? authenticated/.test(SQL_SRC), 'anonymous Storage write found');
   ok('repair SQL contains the same admin boundary', /is_portal_admin[\s\S]*app_metadata[\s\S]*role.*admin/.test(FIX_SQL_SRC), 'repair SQL is incomplete');
 
+  console.log('\n[14] login identifier: email / phone accepted, UUID rejected');
+  {
+    const { SP } = loadApp({});
+    /* UUID password login ke liye kabhi valid nahi — network par bhejne se
+       pehle hi saaf message milna chahiye. */
+    let uuidErr = null;
+    try { await SP.api('/api/admin/login', 'POST', { email: UID, password: 'x' }); }
+    catch (error) { uuidErr = error; }
+    ok('UUID login rejected with UUID/User ID hint',
+      !!uuidErr && /User ID \(UUID\)/i.test(uuidErr.message) && !/Invalid Login Credentials/i.test(uuidErr.message),
+      uuidErr && uuidErr.message);
+
+    const ident = SP.loginIdentity;
+    ok('email aur phone dono pehchane jaate hain',
+      ident(EMAIL).kind === 'email' && ident(' ' + EMAIL.toUpperCase() + ' ').email === EMAIL &&
+      ident('+91 91777 85011').phone === '+919177785011' && ident('9177785011').phone === '+919177785011' &&
+      ident(UID).kind === 'uuid' && ident('').kind === 'empty',
+      JSON.stringify([ident('+91 91777 85011'), ident('9177785011'), ident(UID)]));
+
+    const good = await SP.api('/api/admin/login', 'POST', { email: EMAIL, password: 'ok' });
+    ok('sahi email se login chalta hai', !!(good && good.ok && good.token), JSON.stringify(good).slice(0, 90));
+  }
+
   console.log('\n──────────────────────────────');
   console.log(pass + ' passed, ' + fail + ' failed   (js/app.js, ' + APP_SRC.split('\n').length + ' lines loaded)');
   mock.close();
