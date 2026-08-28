@@ -69,12 +69,36 @@ policies/RPCs/grants repair kariye. Admin user ka App Metadata update karne ke b
 - `config.js` me localStorage backend override ek browser-local troubleshooting feature hai; ise production
   configuration ka substitute na samjhein.
 
+## 3a. Admin login — kya daalna hai
+
+Login box **Authentication email** leta hai (ya us user ka configured phone). Supabase ka
+**User ID / UUID** password login ke liye kaam nahi karta — GoTrue password grant sirf email/phone
+samajhta hai, isliye UUID daalne par app pehle hi saaf message deta hai (network call bheje bina).
+
+| Aap daalte ho | Chalega? |
+|---|---|
+| `admin@envess.co.in` | ✅ Authentication → Users me dikhne wala **Email** |
+| `+91 91777 85011` / `9177785011` | ✅ tabhi jab user Supabase me phone se bana ho (10 digit par `+91` lag jaata hai) |
+| `11111111-2222-…` (User ID) | ❌ ye UUID hai — app batayega ki email daaliye |
+
+Login se pehle ek baar confirm kar lijiye:
+
+1. Supabase → **Authentication → Users** → user select kariye.
+2. **App Metadata** bilkul aisa ho: `{"role":"admin"}`
+3. Email **confirmed** ho (ya Providers → Email me confirmation off).
+4. Sign out → page **hard-refresh** → dobara login.
+
+Agar admin claim nahi hai to login **fail hoke wajah dikhayega** (chupchap login screen par
+wapas nahi jayega) — password badalne ki zarurat nahi hoti.
+
 ## 3b. “Save nahi hua” / RLS troubleshooting
 
 | Message ka shuru | Asli matlab | Kaam |
 |---|---|---|
 | “logged-in nahi / session expire” | request me valid JWT nahi gaya | Admin → **Login / re-login**; app token refresh bhi try karta hai |
 | “admin permission nahi hai” | user authenticated hai par App Metadata claim nahi | Dashboard → Authentication → Users → App Metadata me `{"role":"admin"}`, phir sign out/in |
+| “User ID (UUID) hai — isse password login nahi hota” | email ki jagah UUID daal diya | Users list ka **Email** column use kariye |
+| “Supabase … second me jawab nahi de raha” | cloud slow/offline (request timeout hui) | Net/Supabase status dekhiye; portal cached copy dikhata rehta hai aur Admin button phir bhi khulta hai |
 | “GRANT missing” ya policy error | existing project ka SQL/policy setup purana hai | SQL Editor me **`supabase-rls-fix.sql`** run karke phir Save kariye |
 | Storage upload 401/403 | deploy command me admin JWT nahi, expired JWT, ya role missing | `SUPABASE_ADMIN_JWT` fresh dijiye aur admin claim check kariye |
 
