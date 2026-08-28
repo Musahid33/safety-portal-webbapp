@@ -36,11 +36,14 @@ create policy "portal_config_read_all" on public.portal_config
 
 drop policy if exists "portal_config_write_admin" on public.portal_config;
 create policy "portal_config_write_admin" on public.portal_config
-  for update to authenticated with check (true);
+  for update to authenticated
+  using ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin')
+  with check ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
 
 drop policy if exists "portal_config_insert_admin" on public.portal_config;
 create policy "portal_config_insert_admin" on public.portal_config
-  for insert to authenticated with check (true);
+  for insert to authenticated
+  with check ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
 
 -- 3) Click counter (kaun sa button kitna click hua) -----------------------
 create table if not exists public.portal_hits (

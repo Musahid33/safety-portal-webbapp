@@ -431,7 +431,7 @@
         fld('Naya password dobara', '<input type="password" id="pw-new2" autocomplete="new-password" />') +
         '</div>' +
         '<div class="acts" style="margin-top:14px"><button class="btn pri" data-act="pw-change">' + ICON('lock') + ' Password badlein</button><span class="tip" id="pw-msg"></span></div>' +
-        '<div class="hint" style="margin-top:16px">Note: <b>Current password ki zarurat nahi</b> — Supabase logged-in session se hi update hota hai. Agar kisi aur ko admin banana ho to Supabase Dashboard me ek aur user banaiye; RLS policy <span class="mono">authenticated</span> role ko likhne deti hai.</div>';
+        '<div class="hint" style="margin-top:16px">Note: <b>Current password ki zarurat nahi</b> — Supabase logged-in session se hi update hota hai. Admin banane ke liye Supabase Dashboard → Authentication → Users me App Metadata <span class="mono">{"role":"admin"}</span> set kariye, phir sign out/in kariye. RLS sirf authenticated admin ko likhne deti hai.</div>';
     }
     return '<div class="hint">Admin panel ka password. Isko default (<span class="mono">admin@123</span>) se zaroor badal dijiye — panel se poora portal control hota hai.</div>' +
       (mustChange ? '<div class="sup-note" style="margin-bottom:12px">⚠ Aap abhi bhi default password use kar rahe hain.</div>' : '') +

@@ -96,7 +96,7 @@
       return 'Supabase me table public.portal_config nahi mila — SQL Editor me supabase-setup.sql ek baar RUN kariye.';
     }
     if (status === 401) return 'Session khatam ya login nahi — Admin → Cloud → Login kariye (Supabase user se). Anon key se likha nahi ja sakta (RLS).';
-    if (status === 403) return 'Supabase ne likhne se roka (RLS policy) — login authenticated role se hona chahiye; supabase-setup.sql me "portal_config_write_admin" policy hai.';
+    if (status === 403) return 'Supabase ne likhne se roka (RLS policy) — admin user ke App Metadata me {"role":"admin"} set karke sign out/in kariye. portal_config_write_admin policy authenticated admin ko hi INSERT/UPDATE deti hai.';
     if (status === 409) return 'Supabase ne conflict bataya (' + ((j && j.code) || 'PGRST409') + ') — upsert ke liye id primary key chahiye. SQL Editor me supabase-all.sql ek baar RUN karke dobara save kariye.';
     return (j && (j.msg || j.error_description || j.error || j.message)) || ('Supabase error ' + status);
   }
@@ -140,13 +140,27 @@
     }
     if (path === '/api/admin/logout') { suStore({ access_token: null, refresh_token: null }); try { localStorage.removeItem('sp_token_v1'); } catch (e) {} return { ok: true }; }
 
+    async function requireAdminSession() {
+      if (!tok() && !(await suRefresh())) throw err('Login required — pehle Supabase admin se login kariye.', 401);
+      var ur = await fetch(BE.url + '/auth/v1/user', { headers: H() });
+      var user = await jread(ur);
+      if (!ur.ok || !user || !user.id) throw err('Session valid nahi hai — dobara Supabase admin login kariye.', 401);
+      var appRole = user.app_metadata && user.app_metadata.role;
+      if (appRole !== 'admin') throw err('Is Supabase user ko admin permission nahi hai. Authentication → Users me App Metadata {"role":"admin"} set karke dobara login kariye.', 403);
+      BE.email = user.email || BE.email;
+      return user;
+    }
+
     if (path === '/api/admin/me') {
-      if (!tok() && !(await suRefresh())) throw err('Login required', 401);
+      await requireAdminSession();
       return { ok: true, mustChange: false, email: BE.email, updatedAt: BE.updatedAt, hasRow: BE.hasRow };
     }
 
     if (path === '/api/admin/config' && method === 'PUT') {
       var data = body && body.config ? body.config : body;
+      /* Do not attempt a write with the public anon key. Verify both the
+         Supabase session and its admin app_metadata before the upsert. */
+      await requireAdminSession();
       /* Ek hi UPSERT — POST ...?on_conflict=id + Prefer: resolution=merge-duplicates.
          Purana "PATCH, warna POST" 409 (duplicate key) deta tha jab BE.hasRow stale ho:
          row cloud par pehle se thi par local state kehti thi nahi (ya ulta). Ab PostgREST
@@ -328,23 +342,14 @@
   function renderSupport() {
     var s = (SP.config && SP.config.support) || {};
     var mob = String(s.mobile || '').replace(/[^\d+]/g, '');
-    var alt = String(s.altMobile || '').replace(/[^\d+]/g, '');
     var rows = '';
     rows += '<div class="sup-who"><div class="av">' + esc((s.name || 'S').slice(0, 2).toUpperCase()) + '</div><div>' +
       '<div class="nm">' + esc(s.name || 'Support Team') + '</div>' +
       '<div class="rl">Portal support &amp; link management' + (s.developer ? ' · developed by ' + esc(s.developer) : '') + '</div></div>';
-    if (s.mobile) rows += '<a class="contact" href="tel:+' + esc(mob.replace(/^\+/, '')) + '"><span class="ci">' + ICON('phone') + '</span>' +
-      '<span><span class="cl">Mobile / Call</span><span class="cv">' + esc(s.mobile) + '</span></span></a>';
-    if (s.altMobile) rows += '<a class="contact" href="tel:+' + esc(alt.replace(/^\+/, '')) + '"><span class="ci">' + ICON('phone') + '</span>' +
-      '<span><span class="cl">Alternate number</span><span class="cv">' + esc(s.altMobile) + '</span></span></a>';
+    // Header Support is intentionally WhatsApp-only. Do not render phone,
+    // alternate number, email, Call now, or Copy number actions here.
     if (s.mobile) rows += '<a class="contact wa" target="_blank" rel="noopener" href="https://wa.me/' + esc(mob.replace(/[^0-9]/g, '')) + '?text=' + encodeURIComponent('Hi ' + (s.name || 'Musahid') + ', mujhe Safety Portal me help chahiye.') + '">' +
       '<span class="ci">' + ICON('chat') + '</span><span><span class="cl">WhatsApp</span><span class="cv">Chat on WhatsApp</span></span></a>';
-    if (s.email) rows += '<a class="contact em" href="mailto:' + esc(s.email) + '"><span class="ci">' + ICON('mail') + '</span>' +
-      '<span><span class="cl">Email</span><span class="cv">' + esc(s.email) + '</span></span></a>';
-    rows += '<div class="acts">' +
-      (s.mobile ? '<a class="btn grn" href="tel:+' + esc(mob.replace(/^\+/, '')) + '">' + ICON('phone') + ' Call now</a>' : '') +
-      '<button class="btn gho" data-copy="' + esc(s.mobile || '') + '">' + ICON('clipboard') + ' Copy number</button>' +
-      '</div>';
     if (s.note) rows += '<div class="sup-note">' + ICON('alert') + ' ' + esc(s.note) + '</div>';
     document.getElementById('sup-body').innerHTML = rows;
     document.getElementById('sup-title').textContent = (s.heading || 'SUPPORT') + ' — ' + (s.name || '');
