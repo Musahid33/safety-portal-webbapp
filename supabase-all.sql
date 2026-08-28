@@ -1,11 +1,11 @@
 -- =====================================================================
 --  SAFETY PORTAL — EK HI FILE, EK HI RUN  (recommended)
---  Isme 2 kaam hain: (A) portal ka DB (portal_config + hits + RLS + seed)
---                     (B) site host karne ke liye public 'portal' bucket + temporary upload policy
+--  Isme 2 kaam hain: (A) portal ka DB (portal_config + hits + RLS + admin checks)
+--                     (B) site ka public 'portal' bucket (read-only by default)
 --
 --  Supabase Dashboard → SQL Editor → New query → POORA paste → RUN
---  Uske baad:  site files upload (main kar dunga, ya aap Dashboard → Storage se)
---          aur  supabase-lockdown.sql  (upload policy band karne ke liye) — zaroor chalaiye.
+--  Site deploy karne ke liye admin JWT wala CLI command use kariye; public anon
+--  requests ko upload/update/delete ki permission kabhi nahi milti.
 -- =====================================================================
 
 -- ---------- (A) DATABASE ----------
@@ -27,7 +27,15 @@ drop trigger if exists portal_config_touch on public.portal_config;
 create trigger portal_config_touch before update on public.portal_config
   for each row execute function public.touch_updated_at();
 
--- 2) Row-level security: sab padh sakte hain, sirf logged-in admin likh sakta hai
+-- 2) Row-level security: sab padh sakte hain, sirf admin user likh sakta hai
+-- App metadata ka role JWT me aata hai; public anon key kabhi admin nahi hoti.
+create or replace function public.is_portal_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+  select coalesce((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin', false)
+$$;
+revoke execute on function public.is_portal_admin() from public;
+grant execute on function public.is_portal_admin() to authenticated;
+
 alter table public.portal_config enable row level security;
 
 drop policy if exists "portal_config_read_all" on public.portal_config;
@@ -37,20 +45,19 @@ create policy "portal_config_read_all" on public.portal_config
 drop policy if exists "portal_config_write_admin" on public.portal_config;
 create policy "portal_config_write_admin" on public.portal_config
   for update to authenticated
-  using ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin')
-  with check ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
+  using (public.is_portal_admin())
+  with check (public.is_portal_admin());
 
 drop policy if exists "portal_config_insert_admin" on public.portal_config;
 create policy "portal_config_insert_admin" on public.portal_config
   for insert to authenticated
-  with check ((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin');
+  with check (public.is_portal_admin());
 
 -- 2b) GRANTS — RLS se PEHLE table ka privilege aata hai. Ye na ho to PostgREST 403
 --     deta hai aur browser me error "RLS ne roka" jaisa dikhta hai (do baar ho chuka hai).
 grant usage on schema public to anon, authenticated, service_role;
 grant select                 on table public.portal_config to anon;
 grant select, insert, update on table public.portal_config to authenticated;
-grant select                 on table public.portal_hits  to authenticated;
 alter table public.portal_config add column if not exists updated_by text;
 
 -- 3) Click counter (kaun sa button kitna click hua) -----------------------
@@ -59,11 +66,13 @@ create table if not exists public.portal_hits (
   hits     bigint       not null default 0,
   last_at  timestamptz  not null default now()
 );
+grant select on table public.portal_hits to authenticated;
 alter table public.portal_hits enable row level security;
 
 drop policy if exists "portal_hits_read_admin" on public.portal_hits;
+drop policy if exists "portal_hits_read_authenticated" on public.portal_hits;
 create policy "portal_hits_read_admin" on public.portal_hits
-  for select to authenticated using (true);
+  for select to authenticated using (public.is_portal_admin());
 
 create or replace function public.record_hit(p_key text) returns void
 language plpgsql security definer set search_path = public as $$
@@ -75,11 +84,17 @@ end $$;
 
 create or replace function public.reset_hits() returns void
 language plpgsql security definer set search_path = public as $$
-begin delete from portal_hits; end $$;
+begin
+  if not public.is_portal_admin() then
+    raise exception 'portal admin required' using errcode = '42501';
+  end if;
+  delete from public.portal_hits;
+end $$;
 
+revoke execute on function public.record_hit(text) from public;
 grant execute on function public.record_hit(text)  to anon, authenticated;
+revoke execute on function public.reset_hits()      from public, anon;
 grant execute on function public.reset_hits()      to authenticated;
-revoke execute on function public.reset_hits()      from anon;
 
 -- 4) Seed row: aapka 7-section portal (branding + Support = Musahid 9177785011)
 insert into public.portal_config (id, data)
@@ -93,17 +108,9 @@ on conflict (id) do nothing;
 -- create policy "portal_config_read_login_only" on public.portal_config
 --   for select to authenticated using (true);
 
--- 4c) Sirf EK admin user hi likhe (zyada tight) — EMAIL se kariye, UUID copy karne me
---     galti hoti hai (placeholder 'aaaa-bbbb-...' chhoot gaya to SAB write 403 hote hain):
--- drop policy if exists "portal_config_write_admin" on public.portal_config;
--- create policy "portal_config_write_admin" on public.portal_config
---   for update to authenticated
---   using (auth.uid() = (select id from auth.users where email = 'aapka@email.com'))
---   with check (auth.uid() = (select id from auth.users where email = 'aapka@email.com'));
--- drop policy if exists "portal_config_insert_admin" on public.portal_config;
--- create policy "portal_config_insert_admin" on public.portal_config
---   for insert to authenticated
---   with check (auth.uid() = (select id from auth.users where email = 'aapka@email.com'));
+-- 4c) Admin claim ka source: Dashboard → Authentication → Users → Edit user →
+--     App Metadata me {"role":"admin"}. Client-side button hide karna security nahi hai;
+--     upar wali RLS policies aur neeche ke RPC/storage checks is claim ko enforce karte hain.
 
 -- 4d) Admin panel → Cloud → "Session check" ke liye (role/policy/grants ek call me):
 create or replace function public.sp_whoami() returns jsonb
@@ -115,13 +122,22 @@ begin
   begin v_claims := nullif(current_setting('request.jwt.claims', true), '')::jsonb;
   exception when others then v_claims := null; end;
   v_jwt_role := coalesce(v_claims->>'role', 'anon');
-  if v_jwt_role = 'anon' then
-    return jsonb_build_object('jwt_role','anon','uid',null,
-      'note','Request me session JWT nahi tha -> role = anon -> portal_config par RLS write rok dega. Admin panel me login kariye.');
+
+  -- Anonymous and authenticated non-admin callers get no policy/user detail.
+  if v_jwt_role <> 'authenticated' then
+    return jsonb_build_object('jwt_role', v_jwt_role, 'uid', null, 'is_admin', false,
+      'note', 'Request me valid authenticated JWT nahi tha — Admin panel me login kariye.');
   end if;
+  if not public.is_portal_admin() then
+    return jsonb_build_object('jwt_role', v_jwt_role, 'uid', auth.uid(), 'is_admin', false,
+      'note', 'Is user ke app_metadata me role=admin nahi hai.');
+  end if;
+
   begin v_uid := auth.uid(); exception when others then v_uid := null; end;
   if v_uid is not null then
-    begin select u.email, (u.email_confirmed_at is not null) into v_email, v_confirmed from auth.users u where u.id = v_uid;
+    begin
+      select u.email, (u.email_confirmed_at is not null) into v_email, v_confirmed
+        from auth.users u where u.id = v_uid;
     exception when others then v_email := null; v_confirmed := null; end;
   end if;
   select relrowsecurity into v_rls from pg_class where oid = 'public.portal_config'::regclass;
@@ -132,8 +148,8 @@ begin
            'roles', coalesce((select jsonb_agg(r.rolname) from pg_roles r where r.oid = any(p.polroles)), '[]'::jsonb)
          )), '[]'::jsonb) into v_policies
     from pg_policy p where p.polrelid = 'public.portal_config'::regclass;
-  return jsonb_build_object('jwt_role', v_jwt_role, 'uid', v_uid, 'email', v_email,
-    'email_confirmed', v_confirmed, 'rls_enabled', v_rls, 'policies', v_policies,
+  return jsonb_build_object('jwt_role', v_jwt_role, 'uid', v_uid, 'is_admin', true,
+    'email', v_email, 'email_confirmed', v_confirmed, 'rls_enabled', v_rls, 'policies', v_policies,
     'grants', jsonb_build_object(
       'insert', has_table_privilege('authenticated', 'public.portal_config', 'insert'),
       'update', has_table_privilege('authenticated', 'public.portal_config', 'update'),
@@ -162,15 +178,14 @@ select grantee, privilege_type from information_schema.role_table_grants
  where table_schema='public' and table_name='portal_config' order by 1,2;
 -- Expected: anon|select, authenticated|select, authenticated|insert, authenticated|update
 
--- ⚠ Save 403 kare to: (1) Admin → Cloud → Session check (kaunsa role ja raha hai),
---    (2) supabase-rls-fix.sql RUN kariye. Policy me "admin role" jaisa koi check nahi —
---    jo bhi logged-in Supabase user likh sakta hai; anon (bina login) nahi.
+-- ⚠ Save/Stats 403 kare to: (1) Admin → Cloud → Session check (JWT + admin claim),
+--    (2) supabase-rls-fix.sql RUN kariye. Anon aur authenticated non-admin users
+--    config, stats, reset RPC, ya storage files ko modify nahi kar sakte.
 
 
 -- =====================================================================
---  (B) SITE HOSTING — Supabase Storage ka public 'portal' bucket
---  ⚠ Neeche wali 3 "deploy" policies temporary hain; files upload hone ke
---    BAAD supabase-lockdown.sql chalaiye.
+--  (B) SITE HOSTING — Supabase Storage ka public-read 'portal' bucket
+--  Files public padh sakte hain, par upload/update/delete sirf admin JWT se.
 -- =====================================================================
 -- 1) bucket (public) — pehle se ho to sirf public=true kar dega
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -182,18 +197,19 @@ drop policy if exists "portal_read" on storage.objects;
 create policy "portal_read" on storage.objects
   for select to anon, authenticated using (bucket_id = 'portal');
 
--- 3) DEPLOY ke liye (temporary) — upload/overwrite/delete, sirf 'portal' bucket me
+-- 3) DEPLOY — upload/overwrite/delete, sirf admin JWT ke liye
 drop policy if exists "portal_deploy_insert" on storage.objects;
 create policy "portal_deploy_insert" on storage.objects
-  for insert to anon, authenticated with check (bucket_id = 'portal');
+  for insert to authenticated with check (bucket_id = 'portal' and public.is_portal_admin());
 
 drop policy if exists "portal_deploy_update" on storage.objects;
 create policy "portal_deploy_update" on storage.objects
-  for update to anon, authenticated using (bucket_id = 'portal') with check (bucket_id = 'portal');
+  for update to authenticated using (bucket_id = 'portal' and public.is_portal_admin())
+  with check (bucket_id = 'portal' and public.is_portal_admin());
 
 drop policy if exists "portal_deploy_delete" on storage.objects;
 create policy "portal_deploy_delete" on storage.objects
-  for delete to anon, authenticated using (bucket_id = 'portal');
+  for delete to authenticated using (bucket_id = 'portal' and public.is_portal_admin());
 
 -- 4) check
 select id, name, public from storage.buckets where id = 'portal';
